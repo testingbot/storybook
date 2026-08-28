@@ -1,0 +1,431 @@
+# @testingbot/storybook
+
+Run your Storybook stories against real browsers and real devices in the
+[TestingBot](https://testingbot.com) cloud, from inside Storybook.
+
+Pick browsers and real devices in the panel, run your stories on them, and
+review the pixel differences without leaving Storybook. Results also appear in
+Storybook's own Testing widget and as status icons in the sidebar.
+
+## Install
+
+```sh
+npm install --save-dev @testingbot/storybook
+```
+
+Add it to `.storybook/main.js`:
+
+```js
+export default {
+  addons: ['@testingbot/storybook'],
+}
+```
+
+Set your credentials, from https://testingbot.com/members/user/edit:
+
+```sh
+export TB_KEY=...
+export TB_SECRET=...
+```
+
+You can also enter them in the addon panel. Resolution order, most specific
+first:
+
+1. `TB_KEY` and `TB_SECRET` in the environment
+2. `TB_KEY` and `TB_SECRET` in the project's `.env`
+3. `~/.testingbot` (`key:secret` on one line), shared with the rest of the
+   TestingBot toolchain
+4. Credentials entered in the panel for this session only
+
+A pair is always taken from a single source. Mixing a key from one place with a
+secret from another only produces a confusing 401, so partial sources are
+skipped.
+
+## Configuration
+
+Two places, and you can use either or both.
+
+**`.testingbot.json` in your project root.** Committable, reviewable, and the
+file the CLI reads, so this is the one to use if you run in CI as well.
+
+```json
+{
+  "browsers": [
+    { "browserName": "chrome", "browserVersion": "latest", "platform": "WIN10" }
+  ],
+  "devices": [],
+  "include": [],
+  "exclude": [],
+  "maxDiffPixelRatio": 0.001
+}
+```
+
+**Addon options in `.storybook/main.js`.** Storybook's own convention, and these
+override the file:
+
+```js
+export default {
+  addons: [
+    {
+      name: '@testingbot/storybook',
+      options: { maxDiffPixelRatio: 0.05 },
+    },
+  ],
+}
+```
+
+### Extra capabilities
+
+Any [TestingBot option](https://testingbot.com/support/web-automate/playwright/options)
+you add to a browser entry is passed through to the session, so you can set
+things this addon has no opinion about:
+
+```json
+{
+  "browsers": [
+    {
+      "browserName": "chrome",
+      "browserVersion": "latest",
+      "platform": "WIN10",
+      "timeZone": "Europe/Brussels",
+      "geoCountryCode": "BE",
+      "screenResolution": "1920x1080",
+      "build": "storybook-main"
+    }
+  ]
+}
+```
+
+`timeZone` and `geoCountryCode` are worth knowing about for visual testing:
+they change how dates, times and currency render, which is exactly the kind of
+difference a screenshot diff will catch.
+
+Five capabilities are reserved, because the addon computes them and setting them
+by hand would either break the run or point it at another account: `key`,
+`secret`, `tunnelIdentifier`, `localHttpPorts` and `localHttpsPorts`. If you set
+one, it is ignored and the panel tells you.
+
+Keys the addon does not recognise are preserved, not dropped, so saving from the
+panel will not delete something you put in the file by hand.
+
+## Why this addon needs a tunnel
+
+A browser in the TestingBot cloud that opens `http://localhost:6006` resolves
+that inside the cloud VM, where nothing is listening. Your stories have to be
+reachable from the grid, so the addon starts and manages a
+[TestingBot Tunnel](https://testingbot.com/support/tunnel) for you.
+
+There is a second, less obvious problem. The tunnel proxies a fixed set of ports
+into the cloud VM without being asked: 80, 443, 3000, 3001, 3030, 3400 and 8080.
+Storybook's default port, 6006, is not one of them, so a healthy tunnel on its
+own is still not enough. The addon derives your dev server's actual port and
+requests it through the `localHttpPorts` capability, which is why you do not
+have to think about any of this.
+
+Requirements for the tunnel:
+
+- **Java 11 or newer** on your PATH. TestingBot Tunnel is a Java program.
+- A free tunnel slot on your account.
+
+The tunnel is started lazily, on your first run rather than on `storybook dev`,
+so sessions that never run a test do not consume a tunnel. It is torn down when
+Storybook exits, including on Ctrl+C.
+
+## Screenshots and baselines
+
+The first run for a browser has nothing to compare against, so every story is
+recorded as **new** and its screenshot becomes the baseline. Every run after
+that compares against it.
+
+```
+.testingbot/
+  baselines/<browser-key>/<story-id>.png   commit this
+  results/<browser-key>/<story-id>.png     do not commit
+  results/<browser-key>/<story-id>.diff.png
+```
+
+Baselines are the reviewable artefact: they belong in git, so a visual change
+shows up in a pull request. Results are per-run output and should be ignored:
+
+```
+.testingbot/results/
+```
+
+### What gets screenshotted
+
+The story element (`#storybook-root`), not the whole page. This matters more
+than it sounds. A tolerance is a fraction of the image, so a full page
+screenshot makes the denominator mostly empty space around your component. At
+1280x720 a 2% tolerance is 18,432 pixels, which is larger than most components,
+and a change that visibly alters every button on the page still scores under
+it. Cropping to the story makes the denominator the thing under test.
+
+If a story renders into a portal outside the story root, such as a modal
+attached to `document.body`, set `"fullPage": true` to opt back out.
+
+### Tolerance
+
+`maxDiffPixelRatio` defaults to `0.001`: a story fails when more than 0.1% of
+its pixels differ. That is deliberately tight, and it is tight because it can
+afford to be. Measured against the grid, two consecutive runs of 15 stories on
+two browsers produced zero differing pixels in all 30 comparisons, so the
+budget is not absorbing run-to-run noise. It exists for browser version drift.
+
+Before comparing, the addon waits for the story to stop changing: it polls the
+story root until its size and markup have been stable for 500ms, capped at 15
+seconds. Without this, play functions that are still mutating the DOM produce
+screenshots at different heights between runs.
+
+A height change is reported as a size mismatch rather than as "100% of pixels
+differ", because "the story got taller" is the useful message.
+
+### Viewport
+
+Defaults to 1280x720. Set it per project:
+
+```json
+{ "viewport": { "width": 1440, "height": 900 } }
+```
+
+### Where the comparison happens
+
+By default the addon compares locally: it downloads the screenshot, diffs it
+against the PNG in `.testingbot/baselines/`, and writes a diff image next to it.
+Baselines are files in your repository, so a change to one shows up in a pull
+request like any other change.
+
+You can instead hand the whole job to TestingBot:
+
+```json
+{
+  "devices": [{ "deviceName": "iPhone 15", "platformName": "iOS" }],
+  "visual": "hosted"
+}
+```
+
+In hosted mode nothing is downloaded and no PNG is written. The grid takes the
+screenshot, compares it, and returns the verdict, and the panel links to the
+comparison on TestingBot instead of showing a local diff.
+
+It applies to every target in the run, browsers and devices alike, but devices
+are what it is for. A device
+screenshot depends on the exact handset the grid allocated, which makes a PNG
+committed to a repository a fragile baseline in a way a desktop Chrome one is
+not. The hosted service keys baselines per test environment and ignores the iOS
+and Android status and navigation bars automatically, which is a class of false
+positive the local path would otherwise leave to you.
+
+Two things to know before turning it on:
+
+- Baselines live on TestingBot, not in your repository. They will not appear in
+  a pull request, and reviewing a change means opening the link.
+- `maxDiffPixelRatio` does not apply. The hosted service reports a count of
+  differing pixels rather than a fraction, and returns no image dimensions to
+  divide by, so the two are not interchangeable. Use `threshold` instead.
+
+Desktop browsers work in hosted mode too, though `local` remains the default
+for them. Keeping browser baselines in the repository means a change shows up
+in the pull request, which is usually what you want when the baseline is stable
+enough to commit.
+
+Options are passed to the service under `hostedVisual`:
+
+```json
+{
+  "visual": "hosted",
+  "hostedVisual": {
+    "threshold": 0.3,
+    "ignoreSelectors": [".live-clock"]
+  }
+}
+```
+
+`threshold`, `ignoreRegions`, `ignoreSelectors`, `diffColor`, `antialiasing` and
+`disableFreeze` are forwarded. Anything else is dropped, because the service
+would drop it anyway and a command should not claim to ask for something it does
+not.
+
+## Using the panel
+
+Open the **TestingBot** tab in the addon panel, or the TestingBot button in the
+toolbar.
+
+**Pick your browsers.** The panel lists what your account can actually run,
+fetched from TestingBot rather than hardcoded, so the versions offered are the
+ones that exist today. Add a browser, choose a version, and it is written to
+`.testingbot.json`.
+
+**Choose what to run.** Three scopes:
+
+| Scope | Runs |
+| --- | --- |
+| This story | The story you are looking at |
+| This component | Every story in the current component |
+| All stories | Everything the `include` and `exclude` globs allow |
+
+Start with a single story. A full run is one grid session per browser and it is
+billed by the minute, so the narrow scopes are there to keep the feedback loop
+cheap.
+
+**Watch it run.** Progress is per story and per target, including the tunnel
+coming up, so a slow run tells you which part is slow. **Cancel** stops the run
+and closes the sessions rather than leaving them to time out on your account.
+
+**Review the differences.** Changed stories show baseline and current side by
+side, with a toggle for an overlay of the differing pixels. If the change is
+what you intended, **Approve this change** promotes the current screenshot to
+the baseline, and the next run compares against it. Approving writes to
+`.testingbot/baselines`, so the approval itself is a diff in your next commit
+and is reviewable like any other change.
+
+## Real devices
+
+Real iPhones and Android devices are in the same picker as the browsers, and
+they screenshot through WebDriver rather than Playwright.
+
+There is one constraint the panel handles for you and that is worth
+understanding, because it is the reason a device target can appear disabled: a
+real device cannot resolve the hostname `localhost` at all. The tunnel does not
+change that. So devices are not given Storybook's `localhost` URL. They are
+given Storybook's network address, `http://<your LAN IP>:<port>/`, which needs
+no name resolution and which Storybook already binds to and allowlists.
+
+Two situations have no such address, and in both the device targets are shown
+disabled with the reason rather than silently skipped:
+
+- The machine has no non-internal IPv4 address.
+- Storybook was started with `--host localhost`, which binds to the loopback
+  interface only.
+
+The escape hatch for both, and for a Storybook you have published somewhere, is
+`deviceUrl` in `.testingbot.json` or `--device-url` on the CLI.
+
+## Running in CI
+
+The same runner, without Storybook's dev server:
+
+```sh
+npx testingbot-storybook
+```
+
+By default it runs `storybook build`, serves the output, and runs your
+configured browsers against it. Point it at something already running with
+`--url`, or at an already built directory with `--static-dir`.
+
+```yaml
+- run: npx testingbot-storybook --json-file tb-results.json
+  env:
+    TB_KEY: ${{ secrets.TB_KEY }}
+    TB_SECRET: ${{ secrets.TB_SECRET }}
+```
+
+Exit codes are the point of the CLI:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Every story matched its baseline |
+| 1 | Something differed, failed, or was skipped |
+| 2 | The run could not start at all |
+
+A skipped target counts as a failure. A run that quietly covered fewer browsers
+than you asked for would otherwise report green for browsers nobody tested.
+
+If your CI already starts a tunnel, for example with
+[testingbot-tunnel-action](https://github.com/testingbot/testingbot-tunnel-action),
+pass `--tunnel-id` or set `TB_TUNNEL_ID` and the CLI will reuse it instead of
+starting a second one and consuming another parallel session.
+
+`--update-baselines` takes the run as the new truth and rewrites every changed
+baseline, which is the "the redesign landed, accept all of it" button. Run it
+deliberately, not on every build.
+
+`testingbot-storybook --help` lists the rest.
+
+## Storybook's Testing widget
+
+Results are published to Storybook's own status store, so you get sidebar icons
+per story and a TestingBot row in the Testing widget with its own Run button,
+next to any other test providers you have configured.
+
+A first baseline shows as a warning rather than a pass. Nothing was compared,
+and treating it as green would hide the one run where a wrong screenshot gets
+frozen in as the truth.
+
+The widget uses Storybook APIs that are still marked experimental. If a future
+Storybook removes them the addon logs a warning, skips the registration, and the
+panel keeps working unchanged.
+
+## What works today
+
+| Capability | Status |
+| --- | --- |
+| Tunnel lifecycle, port derivation, teardown | Working |
+| Actionable errors for missing Java, bad credentials, exhausted plan or tunnel limit | Working |
+| Browser and device picker from your account's live capability list | Working |
+| Run by story, component or everything, with live progress and cancel | Working |
+| Screenshots, pixel diffs, baselines, side by side review, approval | Working |
+| Real devices over WebDriver | Working |
+| Hosted visual comparison on TestingBot, browsers and devices | Working |
+| CLI with CI exit codes and JSON output | Working |
+| Storybook Testing widget and sidebar statuses | Working |
+| Firefox and WebKit on the grid | Blocked, see below |
+
+Firefox and WebKit are configurable but do not currently connect over
+Playwright. A session starts on the grid and is billed, but the handshake never
+completes and the connect call times out. The same Firefox on the same account
+drives fine over WebDriver, so this is a grid endpoint problem rather than an
+addon one, and it is being tracked separately. Until it is fixed, use
+chromium-family browsers on desktop: `chrome` and `edge`. Real devices are
+unaffected, because they do not go through Playwright.
+
+Two limits that are not bugs and will not be fixed here:
+
+- Playwright does not drive real iOS devices. Its real-device support is Chrome
+  on real Android. This addon reaches real iOS through WebDriver and Mobile
+  Safari instead, which is why devices and desktop browsers take different code
+  paths.
+- Storybook's Vitest addon cannot run against a remote grid. Its orchestrator
+  serves the tests from localhost, which is the one address the grid cannot
+  reach. That is the reason this addon exists as a separate runner rather than
+  as a Vitest configuration.
+
+## Verified versions
+
+The Storybook addon APIs this uses include experimental ones, so the versions
+are pinned and re-verified rather than assumed.
+
+| Package | Verified against |
+| --- | --- |
+| `storybook` | 10.5.10 |
+| `testingbot-tunnel-launcher` | 1.1.19 |
+| TestingBot Tunnel | 4.9 |
+
+`experimental_serverChannel` is experimental by name and is applied at
+`storybook/dist/core-server/index.js:11984` in 10.5.10. `npm test` fails loudly
+if the surfaces this addon depends on disappear, so a Storybook upgrade that
+breaks it is a visible test failure rather than a silently dead panel.
+
+Frameworks this has been booted against: `@storybook/react-vite` and
+`@storybook/react-webpack5`.
+
+## Security
+
+Two deliberate defences, both of which protect your account rather than your
+machine:
+
+- **A per-process nonce.** The preset injects a nonce into the manager document
+  via `managerHead`, and every state-mutating channel event must carry it.
+  Without this, any page you happened to visit could reach your running
+  Storybook and start billable grid runs on your account.
+- **Credentials stay in Node.** They are never sent to the manager, never put in
+  manager state, and never logged. The panel is told only whether a usable pair
+  exists and which source it came from.
+- **One run at a time.** Every run costs grid minutes and a parallel session, so
+  a second trigger while one is in flight is refused with a clear message rather
+  than queued. Credentials entered in the panel are verified against TestingBot
+  before anything is written to `.env`, so a forged event cannot write arbitrary
+  content into your project.
+
+## License
+
+MIT

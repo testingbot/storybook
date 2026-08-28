@@ -1,0 +1,101 @@
+# Visual testing on TestingBot, for copying into .github/workflows/ of your own
+# project.
+#
+# Two things about this file are load-bearing and easy to get wrong:
+#
+#   1. There is no `npx playwright install` step, and there must not be. The
+#      browsers run in the TestingBot cloud. Installing local browsers would
+#      add several minutes to every run and change nothing.
+#   2. The tunnel is started by the action, not by the CLI, and the CLI is told
+#      about it with TB_TUNNEL_ID. Without that the CLI would start a second
+#      tunnel, spending another parallel session from your plan.
+
+name: Storybook visual tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      update_baselines:
+        description: 'Take this run as the new truth and emit baselines to commit'
+        type: boolean
+        default: false
+
+# Grid sessions are a limited resource. Do not let two runs of the same branch
+# compete for the parallel sessions on your plan.
+concurrency:
+  group: testingbot-storybook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual:
+    runs-on: ubuntu-latest
+
+    env:
+      TB_KEY: ${{ secrets.TB_KEY }}
+      TB_SECRET: ${{ secrets.TB_SECRET }}
+      TB_TUNNEL_ID: gh-actions-${{ github.run_id }}
+
+    steps:
+      # Secrets are empty on forks. Skip rather than failing red for a
+      # contributor who cannot possibly have them.
+      - name: Check for TestingBot credentials
+        run: |
+          if [ -z "$TB_KEY" ] || [ -z "$TB_SECRET" ]; then
+            echo "TB_KEY and TB_SECRET are not set, skipping the grid run."
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # The action only publishes exact-version tags. There is no moving v2.
+      # It runs the tunnel with --network=host and blocks until it is ready, so
+      # localhost on this runner is what the cloud browsers resolve.
+      - name: Start TestingBot Tunnel
+        if: env.skip != 'true'
+        uses: testingbot/testingbot-tunnel-action@v2.0.0
+        with:
+          key: ${{ secrets.TB_KEY }}
+          secret: ${{ secrets.TB_SECRET }}
+          tunnelIdentifier: ${{ env.TB_TUNNEL_ID }}
+
+      # Builds Storybook, serves it, runs every story on the browsers in
+      # .testingbot.json, and exits non-zero if anything moved.
+      - name: Run the stories on TestingBot
+        if: env.skip != 'true'
+        run: >
+          npx testingbot-storybook
+          --json-file testingbot-result.json
+          ${{ github.event.inputs.update_baselines == 'true' && '--update-baselines' || '' }}
+
+      # The diffs are the whole point of a red run. Without them the failure
+      # says a percentage and nothing else.
+      - name: Upload the diffs
+        if: always() && env.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: testingbot-visual-results
+          path: |
+            .testingbot/results/
+            testingbot-result.json
+          retention-days: 7
+
+      # Baselines must come from the grid, never from a laptop. Run this
+      # workflow manually with the box ticked, download this artifact, and
+      # commit .testingbot/baselines.
+      - name: Upload the regenerated baselines
+        if: github.event.inputs.update_baselines == 'true' && env.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: testingbot-baselines
+          path: .testingbot/baselines/
+          retention-days: 7

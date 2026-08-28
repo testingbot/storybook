@@ -1,0 +1,99 @@
+{
+  "name": "@testingbot/storybook",
+  "version": "0.1.0",
+  "description": "Run your Storybook stories against real browsers and real devices in the TestingBot cloud, from inside Storybook.",
+  "license": "MIT",
+  "author": "TestingBot <info@testingbot.com>",
+  "homepage": "https://github.com/testingbot/storybook#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/testingbot/storybook.git"
+  },
+  "bugs": {
+    "url": "https://github.com/testingbot/storybook/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./preset": "./preset.cjs",
+    "./manager": "./dist/manager.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "preset.cjs",
+    "src",
+    "README.md",
+    "LICENSE",
+    "examples"
+  ],
+  "keywords": [
+    "storybook",
+    "storybook-addons",
+    "addon",
+    "test",
+    "visual",
+    "visual-testing",
+    "cross-browser",
+    "real-devices",
+    "testingbot",
+    "playwright"
+  ],
+  "storybook": {
+    "displayName": "TestingBot",
+    "supportedFrameworks": [
+      "react",
+      "vue",
+      "angular",
+      "svelte",
+      "web-components",
+      "html"
+    ],
+    "icon": "https://testingbot.com/assets/logo.png"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --test test/**/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "pixelmatch": "^7.2.0",
+    "playwright-core": "^1.62.1",
+    "pngjs": "^7.0.0",
+    "testingbot-tunnel-launcher": "^1.1.19"
+  },
+  "peerDependencies": {
+    "storybook": "^10"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.17.0",
+    "globals": "^17.11.0",
+    "react": "^19.0.0",
+    "storybook": "^10.5.10",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.68.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "testingbot-storybook": "./dist/cli.js"
+  }
+}

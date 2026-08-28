@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tgz
+*.log
+.DS_Store
+
+# Tunnel artefacts
+testingbot-tunnel*.jar
+testingbot-tunnel*.pid
+
+# Per-run screenshot output. Baselines under .testingbot/baselines are committed.
+.testingbot/results/
+
+# Serena tool state, local to a checkout
+.serena/

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      # The surface tests assert that the experimental Storybook APIs this addon
+      # depends on still exist. Run them against the newest Storybook 10 as well
+      # as the pinned one, so an upstream removal shows up here rather than in a
+      # user's Storybook.
+      - name: Re-verify addon surfaces against latest Storybook 10
+        continue-on-error: true
+        run: |
+          npm install --no-save storybook@^10
+          npm test

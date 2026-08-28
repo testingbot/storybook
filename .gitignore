@@ -13,3 +13,6 @@ testingbot-tunnel*.pid
 
 # Serena tool state, local to a checkout
 .serena/
+
+# Built Storybook output, in the examples and anywhere else
+storybook-static/

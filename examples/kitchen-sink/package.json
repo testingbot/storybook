@@ -1,0 +1,24 @@
+{
+  "name": "kitchen-sink",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The Storybook the addon is developed against. Not published.",
+  "scripts": {
+    "storybook": "storybook dev -p 6006 --no-open",
+    "build-storybook": "storybook build",
+    "test": "testingbot-storybook --build",
+    "test:serve": "testingbot-storybook --url http://localhost:6006"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@storybook/react-vite": "^10.5.10",
+    "@testingbot/storybook": "file:../..",
+    "@vitejs/plugin-react": "^4.7.0",
+    "storybook": "^10.5.10",
+    "vite": "^6.0.0"
+  }
+}

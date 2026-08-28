@@ -1,0 +1,18 @@
+{
+  "browsers": [
+    { "browserName": "chrome", "browserVersion": "latest", "platform": "WIN11" },
+    { "browserName": "chrome", "browserVersion": "latest", "platform": "SONOMA" },
+    { "browserName": "edge", "browserVersion": "latest", "platform": "WIN11" }
+  ],
+
+  "devices": [
+    { "deviceName": "iPhone 17", "platformName": "iOS", "platformVersion": "26.0" },
+    { "deviceName": "Pixel 8", "platformName": "Android", "platformVersion": "14.0" }
+  ],
+
+  "exclude": ["escapes-portal--modal"],
+
+  "maxDiffPixelRatio": 0.001,
+
+  "visual": "local"
+}

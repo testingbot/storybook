@@ -14,10 +14,30 @@ import type { TargetSpec } from './types.js'
  * here, and it has to, because the Selenium list contains browsers Playwright
  * cannot drive at all. Offering Internet Explorer in a Playwright picker would
  * sell the user a session that can never connect but is still billed.
+ *
+ * It takes two endpoints to describe the mobile side honestly, and getting that
+ * wrong cost a real debugging session (TB-310). Of the 325 entries in
+ * `/v1/browsers` that carry a `deviceName`, 265 are iOS *simulators*, keyed by
+ * the macOS version hosting them rather than by iOS; 42 are Android
+ * *emulators*, at `platform: "ANDROID"`; and 18 are physical Android, which the
+ * list marks explicitly as `platform: "REAL_ANDROID"`. Physical iOS is not in
+ * that list at all. It only appears in `https://api.testingbot.com/v1/devices`,
+ * which is the fleet inventory and carries an `available` flag per device.
+ *
+ * Treating every `deviceName` entry as real hardware, which is what this used
+ * to do, means asking for a physical iPhone 15 on iOS 17.0 because a simulator
+ * of that name exists. Nothing refuses the request; it simply never starts, and
+ * five minutes later the client times out (TB-312). So real devices come from
+ * `/v1/devices`, simulators and emulators come from `/v1/browsers`, and each
+ * group says which it is.
  */
 
 const CATALOGUE_URL = 'https://api.testingbot.com/v1/browsers'
+const DEVICES_URL = 'https://api.testingbot.com/v1/devices'
 const CATALOGUE_TIMEOUT_MS = 20_000
+
+/** The `platform` value `/v1/browsers` uses for physical Android hardware. */
+const REAL_ANDROID = 'REAL_ANDROID'
 
 /**
  * How many concrete versions to keep per browser and platform.
@@ -103,6 +123,12 @@ export type DeviceGroup = {
   label: string
   /** Newest first. */
   platformVersions: string[]
+  /**
+   * Physical hardware, as opposed to a simulator or emulator. The two are
+   * separate groups even for the same device name, because they are separate
+   * things to book and they do not render identically.
+   */
+  realDevice: boolean
 }
 
 export type Catalogue = {
@@ -127,6 +153,14 @@ type RawEntry = {
   version?: string
   deviceName?: string
   platformName?: string
+}
+
+/** An entry from `/v1/devices`, which uses snake_case where `/v1/browsers` does not. */
+type RawDevice = {
+  name?: string
+  platform_name?: string
+  version?: string
+  available?: boolean
 }
 
 /**
@@ -158,17 +192,41 @@ function browserLabel (browserName: string): string {
   return browserName.charAt(0).toUpperCase() + browserName.slice(1)
 }
 
-/** Splits the flat API list into the two shapes the picker needs. */
-export function toCatalogue (raw: unknown, fetchedAt = new Date().toISOString()): Catalogue {
+/** Splits the two API lists into the shapes the picker needs. */
+export function toCatalogue (
+  raw: unknown,
+  rawDevices: unknown = [],
+  fetchedAt = new Date().toISOString(),
+): Catalogue {
   if (!Array.isArray(raw)) {
     throw new CatalogueError(`${CATALOGUE_URL} did not return a list.`)
   }
 
   // Keyed by identity, valued by the parts plus the versions seen, because
   // device names contain spaces ("Galaxy Tab S9") and splitting a composite
-  // key back apart would truncate them.
+  // key back apart would truncate them. The device key carries `realDevice`
+  // too, so a simulated iPhone 15 and a physical one stay separate entries.
   const browserVersions = new Map<string, { browserName: string; platform: string; versions: Set<string> }>()
-  const deviceVersions = new Map<string, { deviceName: string; platformName: string; versions: Set<string> }>()
+  const deviceVersions = new Map<
+    string,
+    { deviceName: string; platformName: string; realDevice: boolean; versions: Set<string> }
+  >()
+
+  const addDevice = (
+    deviceName: string,
+    platformName: string,
+    version: string,
+    realDevice: boolean,
+  ): void => {
+    if (!deviceName || !platformName || !version) return
+
+    const key = `${deviceName}::${platformName}::${realDevice}`
+    const group = deviceVersions.get(key)
+      ?? { deviceName, platformName, realDevice, versions: new Set<string>() }
+
+    group.versions.add(version)
+    deviceVersions.set(key, group)
+  }
 
   for (const item of raw as RawEntry[]) {
     if (!item || typeof item !== 'object') continue
@@ -180,13 +238,16 @@ export function toCatalogue (raw: unknown, fetchedAt = new Date().toISOString())
     if (item.deviceName && item.platformName) {
       // Device entries report the platform version in `version`: an Android
       // Pixel 9 entry reads version "16.0", platformName "Android".
-      const deviceName = String(item.deviceName)
-      const platformName = String(item.platformName)
-      const key = `${deviceName}::${platformName}`
-      const group = deviceVersions.get(key) ?? { deviceName, platformName, versions: new Set<string>() }
-
-      group.versions.add(version)
-      deviceVersions.set(key, group)
+      //
+      // REAL_ANDROID is the only physical hardware in this list. Everything
+      // else here is a simulator or an emulator, including every iOS entry,
+      // whose `platform` names the macOS host rather than a device platform.
+      addDevice(
+        String(item.deviceName),
+        String(item.platformName),
+        version,
+        String(item.platform ?? '').trim().toUpperCase() === REAL_ANDROID,
+      )
       continue
     }
 
@@ -200,6 +261,20 @@ export function toCatalogue (raw: unknown, fetchedAt = new Date().toISOString())
 
     group.versions.add(version)
     browserVersions.set(key, group)
+  }
+
+  // The fleet inventory, which is the only place physical iOS appears. An
+  // entry that is not `available` is hardware we do not have right now, and
+  // offering it buys the user a five minute wait and no session (TB-312).
+  for (const item of (Array.isArray(rawDevices) ? rawDevices : []) as RawDevice[]) {
+    if (!item || typeof item !== 'object' || item.available !== true) continue
+
+    addDevice(
+      String(item.name ?? '').trim(),
+      String(item.platform_name ?? '').trim(),
+      String(item.version ?? '').trim(),
+      true,
+    )
   }
 
   const browsers: BrowserGroup[] = [...browserVersions.values()]
@@ -216,13 +291,18 @@ export function toCatalogue (raw: unknown, fetchedAt = new Date().toISOString())
     .sort((a, b) => a.label.localeCompare(b.label))
 
   const devices: DeviceGroup[] = [...deviceVersions.values()]
-    .map(({ deviceName, platformName, versions }) => ({
+    .map(({ deviceName, platformName, realDevice, versions }) => ({
       deviceName,
       platformName,
-      label: `${deviceName} (${platformName})`,
+      realDevice,
+      label: realDevice
+        ? `${deviceName} (${platformName})`
+        : `${deviceName} (${platformName} ${platformName.toLowerCase() === 'ios' ? 'simulator' : 'emulator'})`,
       platformVersions: [...versions].sort(compareVersionsDescending),
     }))
-    .sort((a, b) => a.label.localeCompare(b.label))
+    // Physical hardware first: it is what most people came for, and it is the
+    // shorter list.
+    .sort((a, b) => Number(b.realDevice) - Number(a.realDevice) || a.label.localeCompare(b.label))
 
   if (browsers.length === 0) {
     throw new CatalogueError(
@@ -233,30 +313,36 @@ export function toCatalogue (raw: unknown, fetchedAt = new Date().toISOString())
   return { browsers, devices, fetchedAt }
 }
 
-export async function fetchCatalogue ({ signal }: { signal?: AbortSignal } = {}): Promise<Catalogue> {
+async function fetchList (url: string, signal?: AbortSignal): Promise<unknown> {
   let response: Response
 
   try {
-    response = await fetch(CATALOGUE_URL, {
+    response = await fetch(url, {
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(CATALOGUE_TIMEOUT_MS)])
         : AbortSignal.timeout(CATALOGUE_TIMEOUT_MS),
     })
   } catch (error) {
     throw new CatalogueError(
-      `Could not reach ${CATALOGUE_URL} (${(error as Error).message}).`,
+      `Could not reach ${url} (${(error as Error).message}).`,
       'CATALOGUE_UNREACHABLE',
     )
   }
 
   if (!response.ok) {
-    throw new CatalogueError(
-      `${CATALOGUE_URL} returned HTTP ${response.status}.`,
-      'CATALOGUE_UNREACHABLE',
-    )
+    throw new CatalogueError(`${url} returned HTTP ${response.status}.`, 'CATALOGUE_UNREACHABLE')
   }
 
-  return toCatalogue(await response.json())
+  return response.json()
+}
+
+export async function fetchCatalogue ({ signal }: { signal?: AbortSignal } = {}): Promise<Catalogue> {
+  const [browsers, devices] = await Promise.all([
+    fetchList(CATALOGUE_URL, signal),
+    fetchList(DEVICES_URL, signal),
+  ])
+
+  return toCatalogue(browsers, devices)
 }
 
 /** Turns a picker selection back into the config entry shape targets.ts reads. */
@@ -272,6 +358,7 @@ export function toDeviceSpec (
   deviceName: string,
   platformName: string,
   platformVersion: string,
+  realDevice = true,
 ): TargetSpec {
   // iOS devices run Mobile Safari and are driven over WebDriver; Android
   // devices run Chrome and are driven by Playwright. Storing the browser here
@@ -279,5 +366,8 @@ export function toDeviceSpec (
   // what it asked for.
   const browserName = platformName.toLowerCase() === 'ios' ? 'safari' : 'chrome'
 
-  return { deviceName, platformName, platformVersion, browserName, realDevice: true }
+  // Written out even when true, because the difference between a simulator and
+  // the phone in someone's hand is the whole reason to use this addon and the
+  // config file should not leave it implicit.
+  return { deviceName, platformName, platformVersion, browserName, realDevice }
 }

@@ -8,6 +8,7 @@ import {
   applyScope,
   toTargets,
   buildCapabilities,
+  buildAndroidCapabilities,
   buildWsEndpoint,
   browserTypeFor,
   compareImages,
@@ -93,6 +94,55 @@ test('only browserName and browserVersion are top level; everything else is tb:o
   assert.equal(capabilities['tb:options'].timeZone, 'Asia/Tokyo')
   assert.equal(capabilities['tb:options'].tunnelIdentifier, 'ours')
   assert.deepEqual(capabilities['tb:options'].localHttpPorts, [6006])
+})
+
+test('an Android device is asked for flat, because tb:options is not read there', () => {
+  // Playwright reaches Android through _android.connect, and that endpoint only
+  // reads top-level capabilities. The desktop shape connects anyway and hands
+  // back some other device, so the mistake is invisible until someone looks at
+  // the video.
+  const [target] = toTargets({
+    devices: [{ deviceName: 'Pixel 8', platformName: 'Android', platformVersion: '14.0' }],
+  })
+
+  const capabilities = buildAndroidCapabilities(target, {
+    credentials: { key: 'real-key', secret: 'real-secret', source: 'env' },
+    tunnel: { tunnelIdentifier: 'ours', localHttpPorts: [6006] },
+    build: 'storybook-run',
+  })
+
+  assert.equal(capabilities['tb:options'], undefined)
+  assert.equal(capabilities.deviceName, 'Pixel 8')
+  assert.equal(capabilities.platformName, 'Android')
+  assert.equal(capabilities.browserName, 'chrome')
+  assert.equal(capabilities.realDevice, true)
+  assert.equal(capabilities.tunnelIdentifier, 'ours')
+  assert.deepEqual(capabilities.localHttpPorts, [6006])
+  // The version moves: platformVersion is what the config and the catalogue
+  // write, browserVersion is what this endpoint reads.
+  assert.equal(capabilities.browserVersion, '14.0')
+  assert.equal(capabilities.platformVersion, undefined)
+})
+
+test('an Android device cannot be pointed at another account or another tunnel', () => {
+  const [target] = toTargets({
+    devices: [{
+      deviceName: 'Pixel 8',
+      platformName: 'Android',
+      key: 'attacker',
+      'tb:options': { secret: 'attacker-secret', tunnelIdentifier: 'theirs' },
+    }],
+  })
+
+  const capabilities = buildAndroidCapabilities(target, {
+    credentials: { key: 'real-key', secret: 'real-secret', source: 'env' },
+    tunnel: { tunnelIdentifier: 'ours', localHttpPorts: [6006] },
+    build: 'storybook-run',
+  })
+
+  assert.equal(capabilities.key, 'real-key')
+  assert.equal(capabilities.secret, 'real-secret')
+  assert.equal(capabilities.tunnelIdentifier, 'ours')
 })
 
 test('config cannot redirect a run at another account or another tunnel', () => {

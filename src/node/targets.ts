@@ -29,6 +29,11 @@ function keyParts (spec: TargetSpec, base: string[]): string[] {
   return [...base, ...extras].filter(Boolean)
 }
 
+/** What a non-physical device of this platform is called. */
+function simulatedLabel (spec: TargetSpec): string {
+  return String(spec.platformName ?? '').toLowerCase() === 'ios' ? 'simulator' : 'emulator'
+}
+
 export function toTargets (config: ProjectConfig): RunTarget[] {
   const browsers = (config.browsers ?? []).map((spec): RunTarget => {
     const base = [spec.browserName, spec.browserVersion, spec.platform].map(sanitise)
@@ -42,11 +47,26 @@ export function toTargets (config: ProjectConfig): RunTarget[] {
   })
 
   const devices = (config.devices ?? []).map((spec): RunTarget => {
-    const base = [spec.deviceName, spec.platformName, spec.platformVersion].map(sanitise)
+    // A simulator and the physical phone of the same name are two different
+    // rendering environments, so by the rule above they are two different keys
+    // and two different baseline sets. Only the simulator is marked, which
+    // keeps the keys of everything written before simulators existed intact.
+    const simulated = spec.realDevice === false
+    const base = [
+      spec.deviceName,
+      spec.platformName,
+      spec.platformVersion,
+      ...(simulated ? [simulatedLabel(spec)] : []),
+    ].map(sanitise)
 
     return {
       key: keyParts(spec, base).join('_'),
-      label: [spec.deviceName, spec.platformName, spec.platformVersion].filter(Boolean).join(' '),
+      label: [
+        spec.deviceName,
+        spec.platformName,
+        spec.platformVersion,
+        ...(simulated ? [`(${simulatedLabel(spec)})`] : []),
+      ].filter(Boolean).join(' '),
       kind: 'device',
       spec,
     }
@@ -92,6 +112,47 @@ export function buildCapabilities (
       key: credentials.key,
       secret: credentials.secret,
     },
+  }
+}
+
+/**
+ * Android over Playwright is a different endpoint with a different contract.
+ *
+ * The desktop shape does not carry here. TestingBot's Playwright docs put every
+ * capability at the top level for _android.connect, and the Android version
+ * goes in browserVersion rather than platformVersion
+ * (web/app/views/support/web_automate/playwright/mobile.html.erb). Sending the
+ * desktop shape does connect, which is what makes this worth a comment:
+ * deviceName inside tb:options is not read, so the session silently lands on
+ * whatever the endpoint defaults to instead of the device that was asked for.
+ * Measured against the grid: the nested shape returned sdk_gphone64_x86_64, the
+ * flat one returned the Pixel 8 that was requested.
+ */
+export function buildAndroidCapabilities (
+  target: RunTarget,
+  {
+    credentials,
+    tunnel,
+    build,
+  }: { credentials: Credentials; tunnel: TunnelCapability; build: string },
+): Record<string, unknown> {
+  const { 'tb:options': userOptions, platformVersion, browserVersion, ...rest } = target.spec
+  const version = browserVersion ?? platformVersion
+
+  return {
+    browserName: 'chrome',
+    // The config's `devices` list means real hardware, which is also what
+    // toDeviceSpec writes when the catalogue fills it in. A spec that says
+    // otherwise still wins, because `rest` is spread after this.
+    realDevice: true,
+    ...rest,
+    ...(version === undefined ? {} : { browserVersion: version }),
+    ...(isPlainObject(userOptions) ? userOptions : {}),
+    name: target.label,
+    build,
+    ...tunnel,
+    key: credentials.key,
+    secret: credentials.secret,
   }
 }
 

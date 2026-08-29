@@ -51,7 +51,7 @@ change:
 
 So the list is Chrome on Windows and on macOS (same engine, different font
 rendering, which is most of what these stories catch), Edge on Windows, one
-iPhone and one Pixel. Cutting it to Chrome alone makes the run five times faster
+real iPhone and one real Pixel. Cutting it to Chrome alone makes the run five times faster
 and stops testing half the addon.
 
 There is no Firefox or Safari here, and their absence is not an oversight.
@@ -65,31 +65,40 @@ Every device name, platform and version above was checked against
 catalogue is built from. Versions are exact strings: `"26.0"` is a real iOS
 version and `"26"` is not.
 
-That list is necessary and not sufficient for real devices. It offered
-iPhone 15 on iOS 17.0, and asking for it timed out after five minutes with no
-session, because the physical pool has no such device. The list that answers
-that question is `https://api.testingbot.com/v1/devices`, where each entry
-carries an `available` flag. If a device target hangs rather than failing, look
-there first. Tracked as TB-310.
+The two device entries are physical hardware, which is what `realDevice` means
+and what the addon writes by default. Do not assume a device name in
+`https://api.testingbot.com/v1/browsers` is a phone: every iOS entry in that
+list is a simulator, keyed by the macOS version hosting it, and its Android
+entries are emulators unless they say `REAL_ANDROID`. Physical hardware is
+listed at `https://api.testingbot.com/v1/devices`, with an `available` flag per
+device.
 
-## Chrome on macOS is expected to be noisy
+The addon's picker now offers both and says which is which. Simulators are
+genuinely useful while iterating, and they get their own baseline folder because
+they do not render like the phone. If a device target hangs for five minutes
+rather than failing, the likely cause is asking for hardware that is not in the
+fleet.
 
-macOS Chrome on the grid does not rasterise text the same way twice. The same
-unchanged page comes back one of two ways, and the two differ by about 1.3% on
-the text-heavy stories. Six consecutive runs of `Basics/Typography > Serif`
-went differ, match, match, differ, differ, match, and when it differs it is
-always exactly 1.283%. Four of those runs reported the identical
-`SONOMA | googlechrome 150` from the API, so it is not a version drifting
-underneath us. Tracked as TB-309.
+## Why macOS is Sequoia and not Sonoma
 
-It stays in the target list anyway. This example exists to exercise the addon
-against reality, and a grid that renders text two ways is the reality the addon
-ships into. Expect `chrome_latest_sonoma` to report a handful of differences on
-a rerun, look at the diff images to confirm they are the text stories, and do
-not raise `maxDiffPixelRatio` to silence it: it is one number for the whole
-project today, so raising it to cover macOS would blind Windows, Edge and the
-Pixel as well. TB-311 is the per-target tolerance that would let this be
-configured honestly.
+The SONOMA pool is not a single machine image. Some hosts run macOS 14.5.0 and
+some run 14.6.1, and the two lay text out one pixel apart: 14.6.1 builds a 19px
+line box where every other macOS builds a 20px one, from identical font metrics.
+Which host you land on is chance, so the same unchanged page comes back one of
+two ways and the text-heavy stories differ by about 1.3% roughly half the time.
+
+That is not something to tune around. Sequoia (15.6.0) and Tahoe (26.3.1) are
+each a single image, and both agree with macOS 14.5.0, so this target gets the
+same macOS font rendering coverage without the coin flip. Tracked as TB-309, and
+SONOMA goes back the day the pool is level.
+
+Worth knowing in general: `platform` names a major release, not a machine. If a
+macOS target is bimodal and everything else is stable, read the point release
+before suspecting your own code:
+
+```js
+(await navigator.userAgentData.getHighEntropyValues(['platformVersion'])).platformVersion
+```
 
 ## Baselines are not committed here
 

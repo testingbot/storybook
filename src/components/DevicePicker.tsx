@@ -26,11 +26,16 @@ export type DeviceReachabilityView = {
 }
 
 export function deviceKey (spec: TargetSpec): string {
-  return `${spec.deviceName}|${spec.platformName}|${spec.platformVersion}`
+  // The simulator and the physical phone are separately selectable, so they
+  // cannot share a key or adding one would look like a duplicate of the other.
+  return `${spec.deviceName}|${spec.platformName}|${spec.platformVersion}|${spec.realDevice !== false}`
 }
 
 function describe (spec: TargetSpec): string {
-  return `${spec.deviceName} (${spec.platformName} ${spec.platformVersion})`
+  const kind = String(spec.platformName ?? '').toLowerCase() === 'ios' ? 'simulator' : 'emulator'
+  const suffix = spec.realDevice === false ? ` ${kind}` : ''
+
+  return `${spec.deviceName} (${spec.platformName} ${spec.platformVersion}${suffix})`
 }
 
 export const DevicePicker = ({
@@ -68,7 +73,10 @@ export const DevicePicker = ({
       // iOS runs Mobile Safari over WebDriver, Android runs Chrome over
       // Playwright. Recorded here so the config file says what it means.
       browserName: group.platformName.toLowerCase() === 'ios' ? 'safari' : 'chrome',
-      realDevice: true,
+      // Not always true. The catalogue lists simulators and emulators next to
+      // physical hardware, and asking for a simulator as though it were a real
+      // device is a request nothing on the grid will ever answer (TB-310).
+      realDevice: group.realDevice,
     }
 
     if (selected.has(deviceKey(spec))) return
@@ -155,6 +163,12 @@ export const DevicePicker = ({
       <p style={{ ...subtle, opacity: 0.7 }}>
         iPhones run Mobile Safari over a WebDriver session, because Playwright has no iOS device
         backend. Android devices run Chrome through Playwright, the same as desktop.
+      </p>
+
+      <p style={{ ...subtle, opacity: 0.7 }}>
+        Entries marked simulator or emulator are not physical hardware. They start faster and are
+        worth using while iterating, but they render on a desktop GPU and will not catch what a real
+        phone catches.
       </p>
     </section>
   )

@@ -10,6 +10,7 @@ import {
   resolveDeviceUrl,
   runOnGrid,
   toDeviceSpec,
+  toTargets,
 } from '../dist/index.js'
 
 /**
@@ -406,4 +407,37 @@ test('the tunnel is told to proxy the device URL as well as the local one', asyn
   assert.equal(asked.length, 1)
   assert.equal(asked[0].devServerUrl, 'http://localhost:6006')
   assert.deepEqual(asked[0].alsoProxy, ['http://192.168.1.24:7007'])
+})
+
+test('a simulator and the phone of the same name get separate baselines', () => {
+  // Whether a screenshot came off a desktop GPU or off the phone is exactly
+  // the kind of thing the key is supposed to separate, and sharing one
+  // baseline set between them would mean permanent false diffs.
+  const [real, simulated] = toTargets({
+    browsers: [],
+    devices: [
+      toDeviceSpec('iPhone 15', 'iOS', '18.0'),
+      toDeviceSpec('iPhone 15', 'iOS', '18.0', false),
+    ],
+    maxDiffPixelRatio: 0.001,
+  })
+
+  assert.notEqual(real.key, simulated.key)
+  assert.equal(real.key, 'iphone-15_ios_18.0')
+  assert.equal(simulated.key, 'iphone-15_ios_18.0_simulator')
+  assert.match(simulated.label, /simulator/)
+  // Only the simulator is marked, so keys written before simulators were
+  // offered still point at the baselines they already have.
+  assert.equal(real.label, 'iPhone 15 iOS 18.0')
+})
+
+test('a non-physical Android target is called an emulator', () => {
+  const [target] = toTargets({
+    browsers: [],
+    devices: [toDeviceSpec('Pixel 9', 'Android', '16.0', false)],
+    maxDiffPixelRatio: 0.001,
+  })
+
+  assert.equal(target.key, 'pixel-9_android_16.0_emulator')
+  assert.match(target.label, /emulator/)
 })

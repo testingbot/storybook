@@ -1,5 +1,5 @@
-import { chromium, firefox, webkit } from 'playwright-core'
-import type { Browser, BrowserType, Page } from 'playwright-core'
+import { _android, chromium, firefox, webkit } from 'playwright-core'
+import type { BrowserType, Page } from 'playwright-core'
 
 import { getAccountLimits, resolveConcurrency } from './account.js'
 import { baselineDir, baselinePath, readBaseline, resultPath, writeImage } from './baselines.js'
@@ -17,7 +17,7 @@ import { compareImages } from './image-diff.js'
 import { writeLastRun } from './run-store.js'
 import { fetchStoryIndex, selectStories } from './story-index.js'
 import { getSessionId, setSessionName, setSessionStatus, visualSnapshot } from './session.js'
-import { browserTypeFor, buildCapabilities, buildWsEndpoint, toTargets } from './targets.js'
+import { browserTypeFor, buildAndroidCapabilities, buildCapabilities, buildWsEndpoint, toTargets } from './targets.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { buildDeviceCapabilities, WebDriverSession } from './webdriver.js'
 import type {
@@ -208,9 +208,28 @@ export async function runOnGrid ({
         onProgress,
       }
 
-      const outcome = target.kind === 'device' && deviceDriverFor(target.spec) === 'webdriver'
-        ? await runDeviceTarget(args)
-        : await runTarget(args)
+      /**
+       * One target that cannot start is not a reason to throw away the ones
+       * that did. A device that is out of stock, or a browser the grid refuses,
+       * used to abort the pool and discard every result already collected: a
+       * five-target run lost four working targets to the fifth. It is recorded
+       * as skipped instead, which already makes the run report red.
+       */
+      let outcome: TargetRunOutcome
+
+      try {
+        outcome = target.kind === 'device' && deviceDriverFor(target.spec) === 'webdriver'
+          ? await runDeviceTarget(args)
+          : await runTarget(args)
+      } catch (error) {
+        if (signal.aborted) throw error
+
+        const reason = (error as Error).message
+        skipped.push({ key: target.key, label: target.label, reason })
+        onProgress({ phase: 'target-skipped', target: target.key, label: target.label, reason })
+
+        return
+      }
 
       results.push(...outcome.results)
       sessions.push({ key: target.key, label: target.label, sessionId: outcome.sessionId })
@@ -317,10 +336,13 @@ async function runTarget ({
 }: TargetRunArgs): Promise<TargetRunOutcome> {
   throwIfAborted(signal)
 
-  const capabilities = buildCapabilities(target, { credentials, tunnel, build })
+  const android = target.kind === 'device' && deviceDriverFor(target.spec) === 'playwright'
+  const capabilities = android
+    ? buildAndroidCapabilities(target, { credentials, tunnel, build })
+    : buildCapabilities(target, { credentials, tunnel, build })
   const results: StoryResult[] = []
 
-  let browser: Browser | null = null
+  let connection: GridConnection | null = null
   let sessionId: string | null = null
 
   /**
@@ -329,25 +351,17 @@ async function runTarget ({
    * closes the grid keeps the VM and keeps charging for it.
    */
   const onAbort = (): void => {
-    browser?.close().catch(() => {})
+    connection?.close().catch(() => {})
   }
 
   signal.addEventListener('abort', onAbort, { once: true })
 
   try {
-    const browserType = BROWSER_TYPES[browserTypeFor(target.spec)] as BrowserType
+    connection = android
+      ? await connectAndroid(capabilities)
+      : await connectBrowser(capabilities, target, config)
 
-    browser = await browserType.connect(buildWsEndpoint(capabilities), { timeout: CONNECT_TIMEOUT_MS })
-
-    const context = await browser.newContext({
-      viewport: config.viewport ?? DEFAULT_VIEWPORT,
-      // Screenshots must not include a scrollbar that appears only on some
-      // platforms, and reduced motion removes one more source of run-to-run
-      // difference on top of Playwright's own animation freezing.
-      reducedMotion: 'reduce',
-    })
-
-    const page = await context.newPage()
+    const page = connection.page
 
     sessionId = await getSessionId(page)
     await setSessionName(page, `Storybook: ${target.label}`)
@@ -391,10 +405,61 @@ async function runTarget ({
     )
   } finally {
     signal.removeEventListener('abort', onAbort)
-    await browser?.close().catch(() => {})
+    await connection?.close().catch(() => {})
   }
 
   return { results, sessionId }
+}
+
+/** One open grid session, however it was opened. */
+type GridConnection = { page: Page; close: () => Promise<void> }
+
+/**
+ * A grid browser. The context is sized to the configured viewport, because on
+ * desktop the viewport is the addon's to choose and an unpinned one would make
+ * every baseline depend on whatever the grid VM happened to be running.
+ */
+async function connectBrowser (
+  capabilities: Record<string, unknown>,
+  target: RunTarget,
+  config: ProjectConfig,
+): Promise<GridConnection> {
+  const browserType = BROWSER_TYPES[browserTypeFor(target.spec)] as BrowserType
+  const browser = await browserType.connect(buildWsEndpoint(capabilities), { timeout: CONNECT_TIMEOUT_MS })
+
+  const context = await browser.newContext({
+    viewport: config.viewport ?? DEFAULT_VIEWPORT,
+    // Screenshots must not include a scrollbar that appears only on some
+    // platforms, and reduced motion removes one more source of run-to-run
+    // difference on top of Playwright's own animation freezing.
+    reducedMotion: 'reduce',
+  })
+
+  return { page: await context.newPage(), close: () => browser.close() }
+}
+
+/**
+ * A real Android device, which Playwright reaches through _android rather than
+ * chromium. Connecting with the chromium client instead fails with "Malformed
+ * endpoint. Did you use BrowserType.launchServer method?", because the server
+ * hands back a device where the client expected a pre-launched browser.
+ *
+ * The device's own browser is launched and its first page used as it comes. No
+ * viewport is set: the screen is the point of running on real hardware, and
+ * overriding it would produce a desktop-shaped page on a phone.
+ */
+async function connectAndroid (capabilities: Record<string, unknown>): Promise<GridConnection> {
+  const device = await _android.connect(buildWsEndpoint(capabilities), { timeout: CONNECT_TIMEOUT_MS })
+  const context = await device.launchBrowser()
+  const page = context.pages()[0] ?? await context.newPage()
+
+  return {
+    page,
+    close: async () => {
+      await context.close()
+      await device.close()
+    },
+  }
 }
 
 async function captureStory ({
@@ -426,6 +491,12 @@ async function captureStory ({
     // different image every time depending on cache warmth.
     await page.evaluate(() => document.fonts.ready)
     await waitForStableStory(page)
+
+    const renderError = await storyRenderError(page)
+
+    if (renderError !== null) {
+      return { ...base, outcome: 'failed', message: renderError }
+    }
 
     /**
      * Hosted mode never takes a screenshot here, on either driver. hub
@@ -607,6 +678,23 @@ async function waitForStableStory (page: Page): Promise<void> {
 }
 
 /**
+ * Storybook catches a story that throws and swaps in its own error screen. The
+ * story element stays in the document and is empty, so nothing above notices:
+ * the selector is found and an empty element settles immediately. The failure
+ * then surfaces as "locator.screenshot: Timeout exceeded", which sends whoever
+ * reads it looking at the addon rather than at the story. Read the error out.
+ */
+async function storyRenderError (page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    if (!document.body.classList.contains('sb-show-errordisplay')) return null
+
+    const message = document.querySelector('#error-message')?.textContent?.trim()
+
+    return message ? `The story failed to render: ${message}` : 'The story failed to render.'
+  })
+}
+
+/**
  * The real iOS path.
  *
  * Playwright has no iOS device backend, so Mobile Safari on a physical iPhone
@@ -724,7 +812,14 @@ async function captureStoryOnDevice ({
 
   try {
     await session.navigate(storyUrl)
+    await freezeAnimationsOnDevice(session)
     await waitForStableStoryOnDevice(session, signal)
+
+    const renderError = await storyRenderErrorOnDevice(session)
+
+    if (renderError !== null) {
+      return { ...base, outcome: 'failed', message: renderError }
+    }
 
     /**
      * Crop to the story element, for the same reason the Playwright path does:
@@ -824,6 +919,63 @@ async function waitForStableStoryOnDevice (session: WebDriverSession, signal: Ab
 
   // Cap reached, same as the Playwright path: screenshot what is on screen
   // rather than refuse to produce an image.
+}
+
+/**
+ * The WebDriver half of Playwright's `animations: 'disabled'`.
+ *
+ * Without it the two drivers do not take comparable screenshots, and a story
+ * that animates can never be stable on a device. Measured on this project:
+ * motion-animated--spinner came back 1.7% different between two runs on an
+ * iPhone that was otherwise 11 for 11, because the spinner was caught at a
+ * different angle each time.
+ *
+ * Running every animation out in one millisecond lands on the end of the first
+ * iteration, which for a loop is where it started. That is the same frame
+ * Playwright settles on, and more importantly it is the same frame every run.
+ */
+async function freezeAnimationsOnDevice (session: WebDriverSession): Promise<void> {
+  const script = `
+    var style = document.createElement('style');
+    style.textContent = '*, *::before, *::after {' +
+      'animation-delay: -1ms !important;' +
+      'animation-duration: 1ms !important;' +
+      'animation-iteration-count: 1 !important;' +
+      'transition-duration: 0s !important;' +
+      'transition-delay: 0s !important;' +
+    '}';
+    document.head.appendChild(style);
+    return true;
+  `
+
+  try {
+    await session.execute(script, [])
+  } catch {
+    // A story with no animation loses nothing, and one with an animation is
+    // better screenshotted moving than not screenshotted at all.
+  }
+}
+
+/**
+ * storyRenderError, ported to WebDriver for the same reason as the settle wait.
+ */
+async function storyRenderErrorOnDevice (session: WebDriverSession): Promise<string | null> {
+  const script = `
+    if (document.body.className.indexOf('sb-show-errordisplay') === -1) return null;
+    var element = document.getElementById('error-message');
+    var message = element && element.textContent ? element.textContent.trim() : '';
+    return message ? 'The story failed to render: ' + message : 'The story failed to render.';
+  `
+
+  try {
+    const result = await session.execute(script, [])
+
+    return typeof result === 'string' ? result : null
+  } catch {
+    // A probe that cannot run at all says nothing about the story. Let the
+    // screenshot below report whatever is actually wrong.
+    return null
+  }
 }
 
 function sleep (ms: number): Promise<void> {

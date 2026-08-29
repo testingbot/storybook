@@ -26,6 +26,15 @@ const RAW = [
   { selenium_name: 'chrome', name: 'chrome', platform: 'ANDROID', browser_id: 11, version: '15.0', deviceName: 'Pixel 9', platformName: 'Android' },
   { selenium_name: 'Chrome', name: 'chrome', platform: 'ANDROID', browser_id: 12, version: '15.0', deviceName: 'Galaxy Tab S9', platformName: 'Android' },
   { selenium_name: 'safari', name: 'safari', platform: 'BIGSUR', browser_id: 13, version: '14.2', deviceName: 'iPhone 11', platformName: 'iOS' },
+  // The only physical hardware /v1/browsers marks as such.
+  { selenium_name: 'chrome', name: 'chrome', platform: 'REAL_ANDROID', browser_id: 14, version: '14.0', deviceName: 'Galaxy S24', platformName: 'Android' },
+]
+
+/** Copied from https://api.testingbot.com/v1/devices, which is snake_case. */
+const RAW_DEVICES = [
+  { id: 1, name: 'iPhone 15', platform_name: 'iOS', version: '18.0', available: true },
+  { id: 2, name: 'iPhone 15', platform_name: 'iOS', version: '17.0', available: false },
+  { id: 3, name: 'Galaxy S24', platform_name: 'Android', version: '14.0', available: true },
 ]
 
 test('only browsers Playwright can drive survive the filter', () => {
@@ -65,14 +74,65 @@ test('firefox and safari carry the reason they cannot be used', () => {
 
 test('device names containing spaces survive grouping', () => {
   const { devices } = toCatalogue(RAW)
-  const names = devices.map((d) => d.deviceName).sort((a, b) => a.localeCompare(b))
+  const names = [...new Set(devices.map((d) => d.deviceName))].sort((a, b) => a.localeCompare(b))
 
   // A composite key split on a space would have produced "Galaxy" and "Pixel".
-  assert.deepEqual(names, ['Galaxy Tab S9', 'iPhone 11', 'Pixel 9'])
+  assert.deepEqual(names, ['Galaxy S24', 'Galaxy Tab S9', 'iPhone 11', 'Pixel 9'])
 
   const pixel = devices.find((d) => d.deviceName === 'Pixel 9')
   assert.deepEqual(pixel.platformVersions, ['16.0', '15.0'])
   assert.equal(pixel.platformName, 'Android')
+})
+
+test('an iOS entry in the browser list is a simulator, not a phone', () => {
+  // The whole of TB-310. /v1/browsers keys its iOS simulators by the macOS
+  // host they run on, and treating one as real hardware buys a request that
+  // nothing ever answers.
+  const { devices } = toCatalogue(RAW, RAW_DEVICES)
+  const simulator = devices.find((d) => d.deviceName === 'iPhone 11')
+
+  assert.equal(simulator.realDevice, false)
+  assert.equal(simulator.label, 'iPhone 11 (iOS simulator)')
+})
+
+test('ANDROID is an emulator and REAL_ANDROID is hardware', () => {
+  const { devices } = toCatalogue(RAW, RAW_DEVICES)
+
+  assert.equal(devices.find((d) => d.deviceName === 'Pixel 9').realDevice, false)
+  assert.equal(devices.find((d) => d.deviceName === 'Pixel 9').label, 'Pixel 9 (Android emulator)')
+  assert.equal(devices.find((d) => d.deviceName === 'Galaxy S24').realDevice, true)
+})
+
+test('physical iOS comes from the device list, and only when it is available', () => {
+  const { devices } = toCatalogue(RAW, RAW_DEVICES)
+  const real = devices.filter((d) => d.deviceName === 'iPhone 15')
+
+  assert.equal(real.length, 1)
+  assert.equal(real[0].realDevice, true)
+  assert.equal(real[0].label, 'iPhone 15 (iOS)')
+  // 17.0 is in the fleet but unavailable. Offering it costs five minutes and
+  // returns no session (TB-312).
+  assert.deepEqual(real[0].platformVersions, ['18.0'])
+})
+
+test('the same device is listed twice when it exists as both', () => {
+  const { devices } = toCatalogue(RAW, RAW_DEVICES)
+  const both = devices.filter((d) => d.deviceName === 'Galaxy S24')
+
+  // REAL_ANDROID from one list and the fleet inventory from the other describe
+  // the same hardware, so they must merge rather than double up.
+  assert.equal(both.length, 1)
+  assert.equal(both[0].realDevice, true)
+})
+
+test('physical hardware is offered before simulators', () => {
+  const { devices } = toCatalogue(RAW, RAW_DEVICES)
+
+  assert.deepEqual(
+    devices.map((d) => d.realDevice),
+    [...devices].sort((a, b) => Number(b.realDevice) - Number(a.realDevice)).map((d) => d.realDevice),
+  )
+  assert.equal(devices[0].realDevice, true)
 })
 
 test('platform codes are given human labels but keep their capability value', () => {

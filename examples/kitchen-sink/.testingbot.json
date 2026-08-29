@@ -1,7 +1,7 @@
 {
   "browsers": [
     { "browserName": "chrome", "browserVersion": "latest", "platform": "WIN11" },
-    { "browserName": "chrome", "browserVersion": "latest", "platform": "SONOMA" },
+    { "browserName": "chrome", "browserVersion": "latest", "platform": "SEQUOIA" },
     { "browserName": "edge", "browserVersion": "latest", "platform": "WIN11" }
   ],
 

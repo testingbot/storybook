@@ -369,9 +369,10 @@ async function main (argv: string[]): Promise<number> {
       },
     })
   } catch (error) {
-    const tunnelError = toTunnelError(error)
-
-    log(tunnelError ? tunnelError.message : (error as Error).message)
+    // A RunError already says what failed and on which target. Passing it
+    // through toTunnelError relabels it, so a dead grid session used to be
+    // reported as "TestingBot Tunnel could not be started".
+    log(error instanceof RunError ? error.message : toTunnelError(error).message)
 
     if (error instanceof RunError && error.code === 'NO_DEVICE_URL') {
       log('Pass --device-url with a Storybook a device can open.')

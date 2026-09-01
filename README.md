@@ -225,6 +225,35 @@ Defaults to 1280x720. Set it per project:
 { "viewport": { "width": 1440, "height": 900 } }
 ```
 
+### Several widths in one run
+
+To catch a layout that only breaks on a phone-sized screen, list the widths you
+care about:
+
+```json
+{ "widths": [375, 768, 1280] }
+```
+
+Every story is then captured once per width in the same grid session, and each
+width gets its own baseline folder: `chrome_latest_win11_375` next to
+`chrome_latest_win11_1280`. The height comes from `viewport`, or 720 if you have
+not set one.
+
+Two things are worth knowing before you turn this on.
+
+The first is cost. Widths multiply the whole run, so three widths across five
+browsers is fifteen times the stories. The panel shows the multiplier before you
+press Run.
+
+The second is that this is a desktop setting. A real iPhone has the screen it
+has, and forcing it to 1280 would render a desktop-shaped page on a phone, which
+is the opposite of why you ran it on a phone. Devices are captured at their own
+size, keep their existing baseline key, and the run says so rather than letting
+you assume otherwise.
+
+If you leave `widths` out, nothing changes: one capture at `viewport`, and the
+baseline folders keep the names they already have.
+
 ### Where the comparison happens
 
 By default the addon compares locally: it downloads the screenshot, diffs it
@@ -445,6 +474,7 @@ panel keeps working unchanged.
 | Browser and device picker from your account's live capability list | Working |
 | Run by story, component or everything, with live progress and cancel | Working |
 | Per-story `parameters.testingbot`: skip, waitForSelector, args | Working |
+| Several viewport widths in one run, desktop only | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
 | Real Android over Playwright, real iOS over WebDriver | Working |
 | Simulators and emulators, kept apart from physical hardware | Working |

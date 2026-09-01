@@ -72,6 +72,12 @@ export type ProjectConfig = {
   exclude: string[]
   maxDiffPixelRatio: number
   viewport?: Viewport
+  /**
+   * Capture every story once per width, on desktop targets only. Absent means
+   * one capture at `viewport`, which is what keeps existing baseline keys
+   * intact. See variantsFor in targets.ts.
+   */
+  widths?: number[]
   /** Capture the whole page instead of the story element. See runner.ts. */
   fullPage?: boolean
   /**

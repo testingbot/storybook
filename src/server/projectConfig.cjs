@@ -44,6 +44,15 @@ const RESERVED_CAPABILITIES = new Set([
   'localHttpsPorts',
 ])
 
+/**
+ * Bounds for a viewport width. Narrower than a small phone or wider than any
+ * monitor is a typo, and a typo here is expensive: every width multiplies the
+ * whole run. Mirrored by MIN_WIDTH and MAX_WIDTH in src/node/targets.ts, which
+ * is the last guard for a config that never came through this function.
+ */
+const MIN_WIDTH = 200
+const MAX_WIDTH = 4096
+
 const DEFAULT_CONFIG = {
   browsers: [{ browserName: 'chrome', browserVersion: 'latest', platform: 'WIN10' }],
   devices: [],
@@ -67,6 +76,28 @@ const DEFAULT_CONFIG = {
    * not. That is a decision for the project, not a default.
    */
   visual: 'local',
+}
+
+/**
+ * Widths are normalised to a sorted, deduplicated list of whole numbers, and
+ * omitted entirely when nothing usable is left.
+ *
+ * Omitted, not defaulted. An absent `widths` means one capture at the
+ * configured viewport and baseline keys with no width in them, which is what
+ * every project that predates this option already has on disk. Writing a
+ * default here would rename all of them.
+ */
+function normaliseWidths (value) {
+  if (!Array.isArray(value)) return null
+
+  const usable = value
+    .map(Number)
+    .filter((width) => Number.isFinite(width) && width >= MIN_WIDTH && width <= MAX_WIDTH)
+    .map(Math.round)
+
+  const unique = [...new Set(usable)].sort((a, b) => a - b)
+
+  return unique.length > 0 ? unique : null
 }
 
 function getConfigPath () {
@@ -135,7 +166,7 @@ function normaliseConfig (raw) {
     return { config: { ...DEFAULT_CONFIG }, removed }
   }
 
-  const { browsers, devices, include, exclude, maxDiffPixelRatio, visual, ...unknown } = raw
+  const { browsers, devices, include, exclude, maxDiffPixelRatio, visual, widths, ...unknown } = raw
 
   const normalisedBrowsers = (Array.isArray(browsers) ? browsers : [])
     .filter(isPlainObject)
@@ -147,6 +178,7 @@ function normaliseConfig (raw) {
     .filter((entry) => entry.deviceName && entry.platformName)
 
   const ratio = Number(maxDiffPixelRatio)
+  const normalisedWidths = normaliseWidths(widths)
 
   return {
     config: {
@@ -162,6 +194,8 @@ function normaliseConfig (raw) {
       // here decides whether anything is compared locally at all. A typo must
       // fall back to the safe mode, not to no comparison.
       visual: visual === 'hosted' ? 'hosted' : 'local',
+      // Only when there is something to say. See normaliseWidths.
+      ...(normalisedWidths ? { widths: normalisedWidths } : {}),
       // Keys this addon has no opinion about are carried through untouched, so
       // a Save from the panel never destroys something a human put here.
       ...unknown,
@@ -180,7 +214,7 @@ function mergeOptions (fileConfig, addonOptions) {
   // Storybook's own keys arrive in the same object as the addon's options, so
   // only the config-shaped ones are taken.
   const relevant = {}
-  for (const key of ['browsers', 'devices', 'include', 'exclude', 'maxDiffPixelRatio', 'deviceUrl', 'visual', 'hostedVisual']) {
+  for (const key of ['browsers', 'devices', 'include', 'exclude', 'maxDiffPixelRatio', 'deviceUrl', 'visual', 'hostedVisual', 'widths']) {
     if (key in addonOptions) relevant[key] = addonOptions[key]
   }
 
@@ -270,6 +304,7 @@ module.exports = {
   RESERVED_CAPABILITIES,
   getConfigPath,
   normaliseConfig,
+  normaliseWidths,
   mergeOptions,
   readConfig,
   writeConfig,

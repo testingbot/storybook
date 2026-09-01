@@ -39,6 +39,7 @@ export const Panel = () => {
 
   const browsers = selection ?? []
   const deviceSelection = devices ?? []
+  const widths = Array.isArray(tb.config?.widths) ? tb.config.widths : []
   const targetCount = browsers.length + deviceSelection.length
   const canRun = Boolean(tb.credentials?.configured) && targetCount > 0
 
@@ -67,6 +68,21 @@ export const Panel = () => {
       {tb.config && (
         <p style={{ margin: '4px 0 0', fontSize: 13 }}>
           <strong>Tolerance:</strong> {tb.config.maxDiffPixelRatio} of the story&apos;s pixels
+        </p>
+      )}
+
+      {/*
+        * Shown before the run, not discovered from the bill afterwards. Widths
+        * multiply everything: three of them on five browsers is fifteen times
+        * the stories, and the number is worth reading while it can still be
+        * changed.
+        */}
+      {widths.length > 0 && (
+        <p style={{ margin: '4px 0 0', fontSize: 13 }}>
+          <strong>Widths:</strong> {widths.join(', ')} pixels. Every story is captured{' '}
+          {widths.length === 1 ? 'once' : `${widths.length} times`} per browser, so this run costs{' '}
+          {widths.length}x.
+          {deviceSelection.length > 0 && ' Real devices use their own screen and are not affected.'}
         </p>
       )}
 

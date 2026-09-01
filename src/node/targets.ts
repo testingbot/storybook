@@ -1,4 +1,11 @@
-import type { Credentials, ProjectConfig, RunTarget, TargetSpec, TunnelCapability } from './types.js'
+import type {
+  Credentials,
+  ProjectConfig,
+  RunTarget,
+  TargetSpec,
+  TunnelCapability,
+  Viewport,
+} from './types.js'
 
 /**
  * Turns config entries into run targets, and targets into the capabilities a
@@ -12,6 +19,18 @@ import type { Credentials, ProjectConfig, RunTarget, TargetSpec, TunnelCapabilit
  */
 
 const PIXEL_AFFECTING_KEYS = ['timeZone', 'geoCountryCode', 'screenResolution'] as const
+
+/**
+ * The viewport a desktop target gets when nothing says otherwise. It lives here
+ * rather than in the runner because it is half of the width rule below: a run
+ * without `widths` is a run at exactly this size, and the key it writes must
+ * carry no width at all.
+ */
+export const DEFAULT_VIEWPORT: Viewport = { width: 1280, height: 720 }
+
+/** Narrower than a phone or wider than any monitor is a typo, not a viewport. */
+const MIN_WIDTH = 200
+const MAX_WIDTH = 4096
 
 function sanitise (value: unknown): string {
   return String(value ?? '')
@@ -73,6 +92,74 @@ export function toTargets (config: ProjectConfig): RunTarget[] {
   })
 
   return [...browsers, ...devices]
+}
+
+/**
+ * The widths a run captures every story at, or null for "once, at the
+ * configured viewport".
+ *
+ * Null is not the same as [1280], and the difference is the whole reason this
+ * returns null at all. A width in the key is what lets two widths coexist in
+ * one baseline folder, but it also renames every key it touches. A project that
+ * never asked for widths must keep writing `chrome_latest_win11`, or its entire
+ * baseline set is orphaned by an upgrade it did not opt into.
+ *
+ * Nonsense is dropped rather than rejected: a run is worth more than a lecture
+ * about one bad number, and a width that cannot be used is reported by the
+ * config layer before the run starts.
+ */
+export function resolveWidths (config: ProjectConfig): number[] | null {
+  if (!Array.isArray(config.widths)) return null
+
+  const usable = config.widths
+    .map(Number)
+    .filter((width) => Number.isFinite(width) && width >= MIN_WIDTH && width <= MAX_WIDTH)
+    .map(Math.round)
+
+  const unique = [...new Set(usable)].sort((a, b) => a - b)
+
+  return unique.length > 0 ? unique : null
+}
+
+/**
+ * One capture pass of one target: its own baseline folder, its own progress
+ * line, its own viewport.
+ *
+ * A variant is not a grid session. Every variant of a target shares the one
+ * session the target opened and differs only by a resize, because booting a
+ * second VM to look at the same page 375 pixels narrower would triple the bill
+ * for something a single command does.
+ */
+export type TargetVariant = {
+  /** Baseline folder name, and the identity story results are reported under. */
+  key: string
+  label: string
+  /** Null means leave the screen as it is. Only ever null for a real device. */
+  viewport: Viewport | null
+}
+
+export function variantsFor (target: RunTarget, config: ProjectConfig): TargetVariant[] {
+  // A phone has the screen it has. Resizing it would render a desktop-shaped
+  // page on a device whose real screen was the point of running there, so
+  // devices get one variant at whatever they came with. The runner says so out
+  // loud rather than leaving it to be inferred from the baseline names.
+  if (target.kind === 'device') {
+    return [{ key: target.key, label: target.label, viewport: null }]
+  }
+
+  const widths = resolveWidths(config)
+
+  if (!widths) {
+    return [{ key: target.key, label: target.label, viewport: config.viewport ?? DEFAULT_VIEWPORT }]
+  }
+
+  const height = config.viewport?.height ?? DEFAULT_VIEWPORT.height
+
+  return widths.map((width) => ({
+    key: `${target.key}_${width}`,
+    label: `${target.label} at ${width}px`,
+    viewport: { width, height },
+  }))
 }
 
 /**

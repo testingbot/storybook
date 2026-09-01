@@ -26,7 +26,16 @@ import {
 } from './story-parameters.js'
 import type { ParameterMap, StoryParameters } from './story-parameters.js'
 import { getSessionId, setSessionName, setSessionStatus, visualSnapshot } from './session.js'
-import { browserTypeFor, buildAndroidCapabilities, buildCapabilities, buildWsEndpoint, toTargets } from './targets.js'
+import {
+  browserTypeFor,
+  buildAndroidCapabilities,
+  buildCapabilities,
+  buildWsEndpoint,
+  DEFAULT_VIEWPORT,
+  resolveWidths,
+  toTargets,
+  variantsFor,
+} from './targets.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { buildDeviceCapabilities, WebDriverSession } from './webdriver.js'
 import type {
@@ -74,7 +83,6 @@ const SELECTOR_TIMEOUT_MS = 15_000
 const DEVICE_POLL_MS = 400
 /** Mirrors DEFAULT_CONFIG in src/server/projectConfig.cjs. */
 const DEFAULT_MAX_DIFF_PIXEL_RATIO = 0.001
-const DEFAULT_VIEWPORT: Viewport = { width: 1280, height: 720 }
 const BROWSER_TYPES: Record<string, BrowserType> = { chromium, firefox, webkit }
 
 export class RunError extends Error {
@@ -203,6 +211,18 @@ export async function runOnGrid ({
     onProgress({ phase: 'notice', message })
   }
 
+  // Said rather than left to be inferred from a device folder that has no width
+  // in its name. A developer who asked for 375 and 1280 and got one set of
+  // iPhone baselines should be told which of the two it is, and it is neither.
+  const widths = resolveWidths(config)
+
+  if (widths && targets.some((target) => target.kind === 'device')) {
+    notify(
+      `"widths" applies to desktop browsers only. Real devices were captured at their own screen size, ` +
+      `not at ${widths.join(' and ')} pixels.`,
+    )
+  }
+
   try {
     onProgress({ phase: 'tunnel', message: 'Starting the TestingBot tunnel' })
 
@@ -260,7 +280,13 @@ export async function runOnGrid ({
       }
 
       results.push(...outcome.results)
-      sessions.push({ key: target.key, label: target.label, sessionId: outcome.sessionId })
+
+      // One entry per variant, all pointing at the one session that produced
+      // them. The panel lists what was captured, and a width is a thing that
+      // was captured even though it was not a thing that was booted.
+      for (const variant of outcome.reported) {
+        sessions.push({ key: variant.key, label: variant.label, sessionId: outcome.sessionId })
+      }
     })
   } finally {
     // Always, including on cancellation. A tunnel left running holds one of the
@@ -350,7 +376,17 @@ type TargetRunArgs = {
   notify: (message: string) => void
 }
 
-type TargetRunOutcome = { results: StoryResult[]; sessionId: string | null }
+/**
+ * `reported` is the variants this target actually announced, which is not
+ * always one. A target run at three widths reports as three lines in the panel
+ * and three baseline folders while holding a single grid session, so the run
+ * result lists three entries sharing one session id.
+ */
+type TargetRunOutcome = {
+  results: StoryResult[]
+  sessionId: string | null
+  reported: { key: string; label: string }[]
+}
 
 async function runTarget ({
   target,
@@ -371,6 +407,7 @@ async function runTarget ({
   const capabilities = android
     ? buildAndroidCapabilities(target, { credentials, tunnel, build })
     : buildCapabilities(target, { credentials, tunnel, build })
+  const variants = variantsFor(target, config)
   const results: StoryResult[] = []
 
   let connection: GridConnection | null = null
@@ -390,7 +427,7 @@ async function runTarget ({
   try {
     connection = android
       ? await connectAndroid(capabilities)
-      : await connectBrowser(capabilities, target, config)
+      : await connectBrowser(capabilities, target, variants[0]?.viewport ?? null)
 
     const page = connection.page
 
@@ -410,39 +447,51 @@ async function runTarget ({
       notify(`${story.id} was skipped by its own "${PARAMETER_KEY}.skip" parameter.`)
     }
 
-    onProgress({ phase: 'target-started', target: target.key, label: target.label, total: run.length })
-
-    for (const [index, story] of run.entries()) {
+    for (const variant of variants) {
       if (signal.aborted) break
 
-      const result = await captureStory({
-        page,
-        story,
-        parameters: parameters[story.id],
-        target,
-        config,
-        devServerUrl,
-        projectRoot,
-        signal,
-        notify,
-      })
+      // Only when there is more than one, because the context was already
+      // created at the first variant's size and a resize that changes nothing
+      // is still a round trip to the grid.
+      if (variants.length > 1 && variant.viewport) {
+        await page.setViewportSize(variant.viewport)
+      }
 
-      // Null means the cancel landed while this story was in flight. It is not
-      // a failure and must not be counted as one, or every cancelled run would
-      // report red.
-      if (!result) break
+      onProgress({ phase: 'target-started', target: variant.key, label: variant.label, total: run.length })
 
-      results.push(result)
-      onProgress({ phase: 'story', index: index + 1, total: run.length, result })
+      for (const [index, story] of run.entries()) {
+        if (signal.aborted) break
+
+        const result = await captureStory({
+          page,
+          story,
+          parameters: parameters[story.id],
+          targetKey: variant.key,
+          config,
+          devServerUrl,
+          projectRoot,
+          signal,
+          notify,
+        })
+
+        // Null means the cancel landed while this story was in flight. It is
+        // not a failure and must not be counted as one, or every cancelled run
+        // would report red.
+        if (!result) break
+
+        results.push(result)
+        onProgress({ phase: 'story', index: index + 1, total: run.length, result })
+      }
+
+      onProgress({ phase: 'target-finished', target: variant.key, label: variant.label })
     }
 
     const passed = results.every((result) => result.outcome === 'passed' || result.outcome === 'new')
 
     await setSessionStatus(page, passed, passed ? 'All stories matched' : 'Visual differences found')
-    onProgress({ phase: 'target-finished', target: target.key, label: target.label })
   } catch (error) {
     if (signal.aborted) {
-      return { results, sessionId }
+      return { results, sessionId, reported: variants }
     }
 
     throw new RunError(
@@ -454,27 +503,28 @@ async function runTarget ({
     await connection?.close().catch(() => {})
   }
 
-  return { results, sessionId }
+  return { results, sessionId, reported: variants }
 }
 
 /** One open grid session, however it was opened. */
 type GridConnection = { page: Page; close: () => Promise<void> }
 
 /**
- * A grid browser. The context is sized to the configured viewport, because on
- * desktop the viewport is the addon's to choose and an unpinned one would make
- * every baseline depend on whatever the grid VM happened to be running.
+ * A grid browser. The context is sized to the first variant's viewport, because
+ * on desktop the viewport is the addon's to choose and an unpinned one would
+ * make every baseline depend on whatever the grid VM happened to be running.
+ * Later variants resize the page rather than opening a second session.
  */
 async function connectBrowser (
   capabilities: Record<string, unknown>,
   target: RunTarget,
-  config: ProjectConfig,
+  viewport: Viewport | null,
 ): Promise<GridConnection> {
   const browserType = BROWSER_TYPES[browserTypeFor(target.spec)] as BrowserType
   const browser = await browserType.connect(buildWsEndpoint(capabilities), { timeout: CONNECT_TIMEOUT_MS })
 
   const context = await browser.newContext({
-    viewport: config.viewport ?? DEFAULT_VIEWPORT,
+    viewport: viewport ?? DEFAULT_VIEWPORT,
     // Screenshots must not include a scrollbar that appears only on some
     // platforms, and reduced motion removes one more source of run-to-run
     // difference on top of Playwright's own animation freezing.
@@ -549,7 +599,7 @@ async function captureStory ({
   page,
   story,
   parameters,
-  target,
+  targetKey,
   config,
   devServerUrl,
   projectRoot,
@@ -559,14 +609,15 @@ async function captureStory ({
   page: Page
   story: StoryEntry
   parameters: StoryParameters | undefined
-  target: RunTarget
+  /** The variant's key, not the target's. They differ once widths are in play. */
+  targetKey: string
   config: ProjectConfig
   devServerUrl: string
   projectRoot: string
   signal: AbortSignal
   notify: (message: string) => void
 }): Promise<StoryResult | null> {
-  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: target.key }
+  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: targetKey }
   const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
 
   for (const key of rejected) {
@@ -651,7 +702,7 @@ async function captureStory ({
     return { ...base, outcome: 'failed', message: (error as Error).message.split('\n')[0] }
   }
 
-  return recordStory({ actual, story, target, config, projectRoot })
+  return recordStory({ actual, story, targetKey, config, projectRoot })
 }
 
 /**
@@ -666,19 +717,19 @@ async function captureStory ({
 function recordStory ({
   actual,
   story,
-  target,
+  targetKey,
   config,
   projectRoot,
 }: {
   actual: Buffer
   story: StoryEntry
-  target: RunTarget
+  targetKey: string
   config: ProjectConfig
   projectRoot: string
 }): StoryResult {
-  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: target.key }
-  const baselineFile = baselinePath(projectRoot, target.key, story.id)
-  const actualFile = resultPath(projectRoot, target.key, story.id, 'actual')
+  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: targetKey }
+  const baselineFile = baselinePath(projectRoot, targetKey, story.id)
+  const actualFile = resultPath(projectRoot, targetKey, story.id, 'actual')
 
   writeImage(actualFile, actual)
 
@@ -715,7 +766,7 @@ function recordStory ({
     }
   }
 
-  const diffFile = resultPath(projectRoot, target.key, story.id, 'diff')
+  const diffFile = resultPath(projectRoot, targetKey, story.id, 'diff')
 
   writeImage(diffFile, comparison.diff)
 
@@ -830,6 +881,9 @@ async function runDeviceTarget ({
   })
 
   const results: StoryResult[] = []
+  // A device always reports as itself. It has the screen it has, so widths do
+  // not apply and the key stays the one every existing device baseline uses.
+  const reported = [{ key: target.key, label: target.label }]
 
   let session: WebDriverSession | null = null
 
@@ -876,7 +930,7 @@ async function runDeviceTarget ({
         session,
         story,
         parameters: parameters[story.id],
-        target,
+        targetKey: target.key,
         config,
         devServerUrl,
         projectRoot,
@@ -899,7 +953,7 @@ async function runDeviceTarget ({
     onProgress({ phase: 'target-finished', target: target.key, label: target.label })
   } catch (error) {
     if (signal.aborted) {
-      return { results, sessionId: session?.sessionId ?? null }
+      return { results, sessionId: session?.sessionId ?? null, reported }
     }
 
     throw new RunError(
@@ -911,14 +965,14 @@ async function runDeviceTarget ({
     await session?.close().catch(() => {})
   }
 
-  return { results, sessionId: session?.sessionId ?? null }
+  return { results, sessionId: session?.sessionId ?? null, reported }
 }
 
 async function captureStoryOnDevice ({
   session,
   story,
   parameters,
-  target,
+  targetKey,
   config,
   devServerUrl,
   projectRoot,
@@ -928,14 +982,14 @@ async function captureStoryOnDevice ({
   session: WebDriverSession
   story: StoryEntry
   parameters: StoryParameters | undefined
-  target: RunTarget
+  targetKey: string
   config: ProjectConfig
   devServerUrl: string
   projectRoot: string
   signal: AbortSignal
   notify: (message: string) => void
 }): Promise<StoryResult | null> {
-  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: target.key }
+  const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: targetKey }
   const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
 
   for (const key of rejected) {
@@ -1015,7 +1069,7 @@ async function captureStoryOnDevice ({
     return { ...base, outcome: 'failed', message: (error as Error).message.split('\n')[0] }
   }
 
-  return recordStory({ actual, story, target, config, projectRoot })
+  return recordStory({ actual, story, targetKey, config, projectRoot })
 }
 
 /**

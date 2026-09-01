@@ -305,3 +305,24 @@ test('the script timeout is set before the first async script, or iOS refuses it
   // Once per session, not once per script.
   assert.equal(hub.calls.filter((call) => call.path === '/timeouts').length, 1)
 })
+
+/**
+ * TB-354. Widths are desktop only, and a device that quietly captured at its
+ * own size while the config asked for 375 would look like it had honoured it.
+ */
+test('a device ignores widths, keeps its own baseline key, and the developer is told', async () => {
+  hub = fakeHub()
+
+  const result = await run({
+    devices: [toDeviceSpec('iPhone 15', 'iOS', '18.0')],
+    widths: [375, 1280],
+  })
+
+  // Two stories, not four. The width did not multiply anything here.
+  assert.equal(result.totals.new, 2)
+  assert.ok(
+    result.stories.every((story) => story.target === 'iphone-15_ios_18.0'),
+    'a device baseline key must not gain a width suffix',
+  )
+  assert.ok(notices.some((notice) => /widths.*desktop browsers only/i.test(notice)))
+})

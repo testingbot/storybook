@@ -19,7 +19,17 @@ export { WebDriverSession, WebDriverError, buildDeviceCapabilities } from './nod
 export { resolveCredentials, credentialStatus, verifyCredentials } from './node/credentials.js'
 export { runOnGrid, applyScope, RunError } from './node/runner.js'
 export type { RunScope } from './node/runner.js'
-export { toTargets, buildCapabilities, buildAndroidCapabilities, buildWsEndpoint, browserTypeFor } from './node/targets.js'
+export {
+  toTargets,
+  buildCapabilities,
+  buildAndroidCapabilities,
+  buildWsEndpoint,
+  browserTypeFor,
+  resolveWidths,
+  variantsFor,
+  DEFAULT_VIEWPORT,
+} from './node/targets.js'
+export type { TargetVariant } from './node/targets.js'
 export { fetchStoryIndex, selectStories, StoryIndexError } from './node/story-index.js'
 export { compareImages } from './node/image-diff.js'
 export {

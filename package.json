@@ -29,8 +29,7 @@
     "preset.cjs",
     "src",
     "README.md",
-    "LICENSE",
-    "examples"
+    "LICENSE"
   ],
   "keywords": [
     "storybook",

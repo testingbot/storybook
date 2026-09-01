@@ -103,11 +103,25 @@ const Progress = ({ live }: { live: LiveProgress }) => {
     </ul>
   )
 
+  /**
+   * Notices are quieter than a skipped target: a story that asked to be skipped
+   * or a parameter that was ignored is worth reading, but it did not change
+   * whether the run can be trusted.
+   */
+  const notices = live.notices.length > 0 && (
+    <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0 }}>
+      {live.notices.map((notice) => (
+        <li key={notice} style={{ ...subtle, opacity: 0.7 }}>{notice}</li>
+      ))}
+    </ul>
+  )
+
   if (live.message) {
     return (
       <>
         <p style={subtle}>{live.message}...</p>
         {skipped}
+        {notices}
       </>
     )
   }
@@ -121,6 +135,7 @@ const Progress = ({ live }: { live: LiveProgress }) => {
             : 'Starting...'}
         </p>
         {skipped}
+        {notices}
       </>
     )
   }
@@ -136,6 +151,7 @@ const Progress = ({ live }: { live: LiveProgress }) => {
         ))}
       </ul>
       {skipped}
+      {notices}
     </>
   )
 }

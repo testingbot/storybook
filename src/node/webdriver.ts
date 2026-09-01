@@ -21,6 +21,14 @@ import type { TargetSpec } from './types.js'
 const HUB_URL = 'https://hub.testingbot.com/wd/hub'
 const NEW_SESSION_TIMEOUT_MS = 300_000
 const COMMAND_TIMEOUT_MS = 120_000
+/**
+ * How long the driver itself will wait for an async script to call its
+ * callback. It has to be set explicitly: the W3C default is zero, and Safari on
+ * a real iPhone honours that literally, failing with "Timed out waiting for
+ * asynchronous script result after 2 ms" before the script has done anything
+ * (TB-353, found on a real device, not in any unit test).
+ */
+const SCRIPT_TIMEOUT_MS = 30_000
 
 /** The W3C element identifier. It really is this string, and it is not optional. */
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf'
@@ -37,6 +45,7 @@ type Json = Record<string, unknown>
 export class WebDriverSession {
   #sessionId: string
   #hub: string
+  #scriptTimeoutSet = false
 
   private constructor (sessionId: string, hub: string) {
     this.#sessionId = sessionId
@@ -87,6 +96,27 @@ export class WebDriverSession {
    */
   async execute (script: string, args: unknown[] = []): Promise<unknown> {
     return this.#send('POST', '/execute/sync', { script, args })
+  }
+
+  /**
+   * The same, for a script that has to wait for a promise.
+   *
+   * /execute/sync returns as soon as the script does, which for anything
+   * asynchronous means it returns a pending promise the grid then serialises to
+   * null. The async endpoint hands the script a callback as its last argument
+   * and waits for it, which is the only way to read something like Storybook's
+   * story store from here.
+   */
+  async executeAsync (script: string, args: unknown[] = []): Promise<unknown> {
+    if (!this.#scriptTimeoutSet) {
+      // Once per session, and best effort: a driver that will not take the
+      // timeout may still have a workable default, and finding out by trying
+      // the script is better than refusing to try.
+      this.#scriptTimeoutSet = true
+      await this.#send('POST', '/timeouts', { script: SCRIPT_TIMEOUT_MS }).catch(() => {})
+    }
+
+    return this.#send('POST', '/execute/async', { script, args })
   }
 
   /** Returns the element id, or null when nothing matches. Never throws for "not found". */

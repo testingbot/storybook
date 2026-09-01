@@ -38,6 +38,8 @@ export type LiveProgress = {
   targets: Record<string, { label: string; done: number; total: number; finished: boolean }>
   /** Configured targets the runner refused to start, and why. See TB-260. */
   skipped: { target: string; label: string; reason: string }[]
+  /** Things worth saying that are not a target and not a story result. See RunProgressEvent. */
+  notices: string[]
   stories: StoryResult[]
 }
 
@@ -52,6 +54,7 @@ const EMPTY_PROGRESS: LiveProgress = {
   totalStories: 0,
   targets: {},
   skipped: [],
+  notices: [],
   stories: [],
 }
 
@@ -83,6 +86,9 @@ function applyProgress (live: LiveProgress, event: RunProgressEvent): LiveProgre
           : live.targets,
       }
     }
+    case 'notice':
+      // Deduplicated by the runner already, so this cannot grow without bound.
+      return { ...live, notices: [...live.notices, event.message] }
     case 'target-skipped':
       return {
         ...live,

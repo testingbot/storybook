@@ -112,6 +112,14 @@ export type RunProgressEvent =
   | { phase: 'story'; index: number; total: number; result: StoryResult }
   | { phase: 'target-finished'; target: string; label: string }
   | { phase: 'target-skipped'; target: string; label: string; reason: string }
+  /**
+   * Something the developer should know that is not a target and not a story
+   * result: a story that asked to be skipped, or a parameter that was ignored.
+   * Emitted at most once per distinct message per run, because every target
+   * reads the same parameters and would otherwise say the same thing five
+   * times.
+   */
+  | { phase: 'notice'; message: string }
 
 export type RunResult = {
   ok: boolean

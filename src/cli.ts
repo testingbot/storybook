@@ -364,6 +364,7 @@ async function main (argv: string[]): Promise<number> {
 
         if (event.phase === 'stories') log(`${event.total} stor${event.total === 1 ? 'y' : 'ies'} to run.`)
         if (event.phase === 'tunnel') log(event.message)
+        if (event.phase === 'notice') log(`  ${event.message}`)
         if (event.phase === 'target-started') log(`${event.label}: starting...`)
         if (event.phase === 'target-finished') log(`${event.label}: done.`)
       },

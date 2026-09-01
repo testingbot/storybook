@@ -16,6 +16,15 @@ import {
 import { compareImages } from './image-diff.js'
 import { writeLastRun } from './run-store.js'
 import { fetchStoryIndex, selectStories } from './story-index.js'
+import {
+  EXTRACT_ASYNC_SCRIPT,
+  EXTRACT_EXPRESSION,
+  PARAMETER_KEY,
+  partitionSkipped,
+  storyUrl,
+  toParameterMap,
+} from './story-parameters.js'
+import type { ParameterMap, StoryParameters } from './story-parameters.js'
 import { getSessionId, setSessionName, setSessionStatus, visualSnapshot } from './session.js'
 import { browserTypeFor, buildAndroidCapabilities, buildCapabilities, buildWsEndpoint, toTargets } from './targets.js'
 import { TunnelManager } from './tunnel-manager.js'
@@ -53,6 +62,14 @@ const GOTO_TIMEOUT_MS = 60_000
 const ROOT_SELECTOR = '#storybook-root'
 const SETTLE_QUIET_MS = 500
 const SETTLE_TIMEOUT_MS = 15_000
+/**
+ * How long a story's own waitForSelector may take. Shorter than GOTO_TIMEOUT_MS
+ * on purpose: the page has already loaded by then, so this is waiting on the
+ * component rather than on the network, and thirty seconds of that per story
+ * across five targets is a bill rather than a wait. Overridable per story with
+ * the waitTimeout parameter.
+ */
+const SELECTOR_TIMEOUT_MS = 15_000
 /** Real devices are slow enough that polling faster than this only wastes commands. */
 const DEVICE_POLL_MS = 400
 /** Mirrors DEFAULT_CONFIG in src/server/projectConfig.cjs. */
@@ -176,6 +193,16 @@ export async function runOnGrid ({
   const results: StoryResult[] = []
   const sessions: RunResult['targets'] = []
 
+  // Every target reads the same story parameters, so every target finds the
+  // same things to say about them. Said once.
+  const announced = new Set<string>()
+  const notify = (message: string): void => {
+    if (announced.has(message)) return
+
+    announced.add(message)
+    onProgress({ phase: 'notice', message })
+  }
+
   try {
     onProgress({ phase: 'tunnel', message: 'Starting the TestingBot tunnel' })
 
@@ -206,6 +233,7 @@ export async function runOnGrid ({
         projectRoot,
         signal,
         onProgress,
+        notify,
       }
 
       /**
@@ -318,6 +346,8 @@ type TargetRunArgs = {
   projectRoot: string
   signal: AbortSignal
   onProgress: (event: RunProgressEvent) => void
+  /** Reports something once per run, however many targets discover it. */
+  notify: (message: string) => void
 }
 
 type TargetRunOutcome = { results: StoryResult[]; sessionId: string | null }
@@ -333,6 +363,7 @@ async function runTarget ({
   projectRoot,
   signal,
   onProgress,
+  notify,
 }: TargetRunArgs): Promise<TargetRunOutcome> {
   throwIfAborted(signal)
 
@@ -366,19 +397,34 @@ async function runTarget ({
     sessionId = await getSessionId(page)
     await setSessionName(page, `Storybook: ${target.label}`)
 
-    onProgress({ phase: 'target-started', target: target.key, label: target.label, total: stories.length })
+    const parameters = await readStoryParameters(
+      () => page.evaluate(EXTRACT_EXPRESSION),
+      devServerUrl,
+      (url) => page.goto(url, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }).then(() => {}),
+      notify,
+    )
 
-    for (const [index, story] of stories.entries()) {
+    const { run, skipped: skippedStories } = partitionSkipped(stories, parameters)
+
+    for (const story of skippedStories) {
+      notify(`${story.id} was skipped by its own "${PARAMETER_KEY}.skip" parameter.`)
+    }
+
+    onProgress({ phase: 'target-started', target: target.key, label: target.label, total: run.length })
+
+    for (const [index, story] of run.entries()) {
       if (signal.aborted) break
 
       const result = await captureStory({
         page,
         story,
+        parameters: parameters[story.id],
         target,
         config,
         devServerUrl,
         projectRoot,
         signal,
+        notify,
       })
 
       // Null means the cancel landed while this story was in flight. It is not
@@ -387,7 +433,7 @@ async function runTarget ({
       if (!result) break
 
       results.push(result)
-      onProgress({ phase: 'story', index: index + 1, total: stories.length, result })
+      onProgress({ phase: 'story', index: index + 1, total: run.length, result })
     }
 
     const passed = results.every((result) => result.outcome === 'passed' || result.outcome === 'new')
@@ -462,31 +508,85 @@ async function connectAndroid (capabilities: Record<string, unknown>): Promise<G
   }
 }
 
+/**
+ * Asks the page for every story's parameters, once per target.
+ *
+ * The preview has to be loaded for the store to exist, so this navigates to the
+ * bare iframe first. A Storybook that does not answer is not a failure: the run
+ * proceeds with no per-story parameters, which is exactly how it behaved before
+ * TB-353, and says so once rather than per target.
+ */
+async function readStoryParameters (
+  evaluate: () => Promise<unknown>,
+  devServerUrl: string,
+  goto: (url: string) => Promise<void>,
+  notify: (message: string) => void,
+): Promise<ParameterMap> {
+  try {
+    await goto(`${devServerUrl.replace(/\/$/, '')}/iframe.html`)
+
+    const raw = await evaluate()
+
+    if (raw === null || raw === undefined) {
+      notify('Storybook did not expose a story store, so no per-story parameters were read.')
+
+      return {}
+    }
+
+    const { params, warnings } = toParameterMap(raw)
+
+    for (const warning of warnings) notify(warning)
+
+    return params
+  } catch (error) {
+    notify(`Story parameters could not be read: ${(error as Error).message.split('\n')[0]}`)
+
+    return {}
+  }
+}
+
 async function captureStory ({
   page,
   story,
+  parameters,
   target,
   config,
   devServerUrl,
   projectRoot,
   signal,
+  notify,
 }: {
   page: Page
   story: StoryEntry
+  parameters: StoryParameters | undefined
   target: RunTarget
   config: ProjectConfig
   devServerUrl: string
   projectRoot: string
   signal: AbortSignal
+  notify: (message: string) => void
 }): Promise<StoryResult | null> {
   const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: target.key }
-  const storyUrl = `${devServerUrl.replace(/\/$/, '')}/iframe.html?id=${encodeURIComponent(story.id)}&viewMode=story`
+  const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
+
+  for (const key of rejected) {
+    notify(`${story.id}: the arg "${key}" cannot travel in a URL, so the story rendered with its default.`)
+  }
 
   let actual: Buffer
 
   try {
-    await page.goto(storyUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS })
     await page.waitForSelector(ROOT_SELECTOR, { timeout: GOTO_TIMEOUT_MS })
+
+    // The story's own precondition, before the generic settle wait: a component
+    // that fetches has nothing to settle until its data arrives.
+    if (parameters?.waitForSelector) {
+      await page.waitForSelector(parameters.waitForSelector, {
+        timeout: parameters.waitTimeout ?? SELECTOR_TIMEOUT_MS,
+      })
+    }
+
     // Fonts change metrics, so a screenshot taken before they load is a
     // different image every time depending on cache warmth.
     await page.evaluate(() => document.fonts.ready)
@@ -718,6 +818,7 @@ async function runDeviceTarget ({
   projectRoot,
   signal,
   onProgress,
+  notify,
 }: TargetRunArgs): Promise<TargetRunOutcome> {
   throwIfAborted(signal)
 
@@ -743,25 +844,50 @@ async function runDeviceTarget ({
   try {
     session = await WebDriverSession.create(capabilities)
 
-    onProgress({ phase: 'target-started', target: target.key, label: target.label, total: stories.length })
+    // The same read as the Playwright path, over the async execute endpoint,
+    // which is the only one that can wait for the store to resolve.
+    const opened = session
+    const parameters = await readStoryParameters(
+      async () => {
+        const answer = await opened.executeAsync(EXTRACT_ASYNC_SCRIPT) as
+          { value?: unknown; error?: string } | null
 
-    for (const [index, story] of stories.entries()) {
+        if (answer?.error) throw new Error(answer.error)
+
+        return answer?.value ?? null
+      },
+      devServerUrl,
+      (url) => opened.navigate(url),
+      notify,
+    )
+
+    const { run, skipped: skippedStories } = partitionSkipped(stories, parameters)
+
+    for (const story of skippedStories) {
+      notify(`${story.id} was skipped by its own "${PARAMETER_KEY}.skip" parameter.`)
+    }
+
+    onProgress({ phase: 'target-started', target: target.key, label: target.label, total: run.length })
+
+    for (const [index, story] of run.entries()) {
       if (signal.aborted) break
 
       const result = await captureStoryOnDevice({
         session,
         story,
+        parameters: parameters[story.id],
         target,
         config,
         devServerUrl,
         projectRoot,
         signal,
+        notify,
       })
 
       if (!result) break
 
       results.push(result)
-      onProgress({ phase: 'story', index: index + 1, total: stories.length, result })
+      onProgress({ phase: 'story', index: index + 1, total: run.length, result })
     }
 
     const passed = results.every((result) => result.outcome === 'passed' || result.outcome === 'new')
@@ -791,28 +917,46 @@ async function runDeviceTarget ({
 async function captureStoryOnDevice ({
   session,
   story,
+  parameters,
   target,
   config,
   devServerUrl,
   projectRoot,
   signal,
+  notify,
 }: {
   session: WebDriverSession
   story: StoryEntry
+  parameters: StoryParameters | undefined
   target: RunTarget
   config: ProjectConfig
   devServerUrl: string
   projectRoot: string
   signal: AbortSignal
+  notify: (message: string) => void
 }): Promise<StoryResult | null> {
   const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: target.key }
-  const storyUrl = `${devServerUrl.replace(/\/$/, '')}/iframe.html?id=${encodeURIComponent(story.id)}&viewMode=story`
+  const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
+
+  for (const key of rejected) {
+    notify(`${story.id}: the arg "${key}" cannot travel in a URL, so the story rendered with its default.`)
+  }
 
   let actual: Buffer
 
   try {
-    await session.navigate(storyUrl)
+    await session.navigate(url)
     await freezeAnimationsOnDevice(session)
+
+    if (parameters?.waitForSelector) {
+      await waitForSelectorOnDevice(
+        session,
+        parameters.waitForSelector,
+        parameters.waitTimeout ?? SELECTOR_TIMEOUT_MS,
+        signal,
+      )
+    }
+
     await waitForStableStoryOnDevice(session, signal)
 
     const renderError = await storyRenderErrorOnDevice(session)
@@ -872,6 +1016,32 @@ async function captureStoryOnDevice ({
   }
 
   return recordStory({ actual, story, target, config, projectRoot })
+}
+
+/**
+ * A story's own precondition, ported to WebDriver.
+ *
+ * Unlike the settle wait this one is allowed to give up loudly. The developer
+ * named a selector that is supposed to appear, so if it never does the story is
+ * not in the state they asked to screenshot, and a picture of the wrong state
+ * is worse than a reported failure.
+ */
+async function waitForSelectorOnDevice (
+  session: WebDriverSession,
+  selector: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (signal.aborted) return
+    if (await session.findElement(selector)) return
+
+    await sleep(DEVICE_POLL_MS)
+  }
+
+  throw new Error(`Timed out waiting for "${selector}", which this story's waitForSelector parameter asked for.`)
 }
 
 /**
@@ -978,8 +1148,14 @@ async function storyRenderErrorOnDevice (session: WebDriverSession): Promise<str
   }
 }
 
+/**
+ * The timer is deliberately not unref'd. An unref'd sleep is invisible to the
+ * event loop, so a run whose only pending work was a device poll would let Node
+ * exit in the middle of it and the CLI would return without a word. Waiting up
+ * to one poll interval after a cancel is the cheaper of the two.
+ */
 function sleep (ms: number): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, ms).unref?.() })
+  return new Promise((resolve) => { setTimeout(resolve, ms) })
 }
 
 function throwIfAborted (signal: AbortSignal): void {

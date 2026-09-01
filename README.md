@@ -124,6 +124,25 @@ story's name.
 None of them change the baseline name, because a story that always renders the
 same way always renders the same way.
 
+### Capturing one story several ways
+
+To screenshot the same component in more than one state, export it more than
+once. Each export is its own story, so it gets its own baseline with no naming
+scheme to learn, and `tags: ['!dev']` keeps a capture-only variant out of the
+Storybook sidebar while leaving it in the index the addon reads:
+
+```js
+export const Default = {}
+
+export const Dark = {
+  tags: ['!dev'],
+  parameters: { testingbot: { globals: { theme: 'dark' } } },
+}
+```
+
+This is what @percy/storybook's `additionalSnapshots` is for. Storybook already
+has the mechanism, so the addon does not add a second one.
+
 Storybook does not publish parameters in `/index.json`, so they can only be read
 from a loaded preview. Each target reads them once, from the grid browser, which
 costs one extra page load per target. A Storybook that does not expose a store

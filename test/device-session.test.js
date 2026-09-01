@@ -41,7 +41,7 @@ function png (colour) {
  * fails without reaching into the runner. Every script the runner sends is
  * recorded, because what it asks the device to do is the behaviour under test.
  */
-function fakeHub ({ refuse = null, renderError = false, parameters = {}, missingElements = [] } = {}) {
+function fakeHub ({ refuse = null, renderError = false, parameters = {}, allowedGlobals = null, missingElements = [] } = {}) {
   const original = globalThis.fetch
   const scripts = []
   const urls = []
@@ -91,7 +91,11 @@ function fakeHub ({ refuse = null, renderError = false, parameters = {}, missing
 
     // The story store read. Its script hands its answer to a callback, which
     // the grid returns as the command's value.
-    if (path.endsWith('/execute/async')) return json({ value: { value: parameters } })
+    // The envelope the extract script builds: what it found, and which globals
+    // the project declares. Null all the way out is "no store to read".
+    if (path.endsWith('/execute/async')) {
+      return json({ value: { value: parameters === null ? null : { parameters, allowedGlobals } } })
+    }
 
     if (path.endsWith('/execute/sync')) {
       scripts.push(body.script)

@@ -14,9 +14,12 @@ import { PARAMETER_KEY, partitionSkipped, storyUrl, toParameterMap } from '../di
 
 test('the three supported parameters are read, and the rest of the story is ignored', () => {
   const { params, warnings } = toParameterMap({
-    'button--primary': { skip: true },
-    'card--loading': { waitForSelector: '.loaded', args: { state: 'ready' } },
-    'card--plain': {},
+    parameters: {
+      'button--primary': { skip: true },
+      'card--loading': { waitForSelector: '.loaded', args: { state: 'ready' } },
+      'card--plain': {},
+    },
+    allowedGlobals: null,
   })
 
   assert.deepEqual(params['button--primary'], { skip: true })
@@ -28,7 +31,7 @@ test('the three supported parameters are read, and the rest of the story is igno
 
 test('a misspelled parameter is named rather than silently ignored', () => {
   const { params, warnings } = toParameterMap({
-    'button--primary': { waitforSelector: '.loaded' },
+    parameters: { 'button--primary': { waitforSelector: '.loaded' } },
   })
 
   assert.equal(params['button--primary'], undefined)
@@ -39,9 +42,11 @@ test('a misspelled parameter is named rather than silently ignored', () => {
 
 test('a parameter of the wrong type is refused, and its siblings still apply', () => {
   const { params, warnings } = toParameterMap({
-    's--one': { skip: 'yes', waitForSelector: '.ready' },
-    's--two': { waitForSelector: '   ' },
-    's--three': { args: ['not', 'an', 'object'] },
+    parameters: {
+      's--one': { skip: 'yes', waitForSelector: '.ready' },
+      's--two': { waitForSelector: '   ' },
+      's--three': { args: ['not', 'an', 'object'] },
+    },
   })
 
   assert.deepEqual(params['s--one'], { waitForSelector: '.ready' })
@@ -57,10 +62,12 @@ test('a page that answers with nothing is not an error', () => {
 })
 
 test('a page that answers with the wrong shape says so once', () => {
-  const { params, warnings } = toParameterMap(['button--primary'])
+  for (const raw of [['button--primary'], { parameters: ['button--primary'] }, { allowedGlobals: [] }]) {
+    const { params, warnings } = toParameterMap(raw)
 
-  assert.deepEqual(params, {})
-  assert.equal(warnings.length, 1)
+    assert.deepEqual(params, {})
+    assert.equal(warnings.length, 1)
+  }
 })
 
 test('skipped stories are separated, not dropped', () => {
@@ -107,5 +114,96 @@ test('an arg Storybook would refuse is named and the rest still travel', () => {
   })
 
   assert.match(url, /&args=label:Save$/)
-  assert.deepEqual(rejected, ['html'])
+  assert.deepEqual(rejected, ['args.html'])
+})
+
+/**
+ * Globals and queryParams. Globals are the theme and locale switch, and they
+ * are encoded exactly as args are because Storybook parses both with the same
+ * function. queryParams are ordinary parameters and are encoded normally.
+ */
+
+test('globals travel as their own parameter, in the args encoding', () => {
+  const { url, rejected } = storyUrl('http://localhost:6006', 'button--primary', {
+    args: { label: 'Save' },
+    globals: { theme: 'dark', locale: 'en-GB' },
+  })
+
+  assert.equal(
+    url,
+    'http://localhost:6006/iframe.html?id=button--primary&viewMode=story' +
+    '&args=label:Save&globals=theme:dark;locale:en-GB',
+  )
+  assert.deepEqual(rejected, [])
+})
+
+test('a rejected key says which parameter it came from', () => {
+  // "theme" is a plausible name for both, so an unqualified name would leave
+  // the developer editing the wrong object.
+  const { rejected } = storyUrl('http://localhost:6006', 'button--primary', {
+    args: { theme: '<b>' },
+    globals: { theme: '<b>' },
+  })
+
+  assert.deepEqual(rejected, ['args.theme', 'globals.theme'])
+})
+
+test('queryParams are encoded the ordinary way, unlike args and globals', () => {
+  const { url } = storyUrl('http://localhost:6006', 'button--primary', {
+    queryParams: { token: 'a b&c', retries: 3, debug: true },
+  })
+
+  assert.match(url, /&token=a%20b%26c&retries=3&debug=true$/)
+})
+
+test('a query parameter the addon sets itself is refused, not merged', () => {
+  // Two id parameters would screenshot another story under this story's name:
+  // green, and about the wrong thing.
+  const { params, warnings } = toParameterMap({
+    parameters: {
+      'button--primary': { queryParams: { id: 'other--story', viewMode: 'docs', theme: 'dark' } },
+    },
+  })
+
+  assert.deepEqual(params['button--primary'], { queryParams: { theme: 'dark' } })
+  assert.equal(warnings.length, 2)
+  assert.ok(warnings.every((warning) => /addon sets itself/.test(warning)))
+
+  const { url } = storyUrl('http://localhost:6006', 'button--primary', params['button--primary'])
+
+  assert.equal(url.match(/id=/g).length, 1)
+})
+
+test('a query parameter that is not a scalar is refused, and its siblings still travel', () => {
+  const { params, warnings } = toParameterMap({
+    parameters: { 'button--primary': { queryParams: { good: 'yes', bad: { nested: true } } } },
+  })
+
+  assert.deepEqual(params['button--primary'], { queryParams: { good: 'yes' } })
+  assert.equal(warnings.length, 1)
+})
+
+test('a global this Storybook does not declare is named, because Storybook drops it in silence', () => {
+  // Storybook filters URL globals against initialGlobals and globalTypes and
+  // warns only in the page's own console, so from out here the story just
+  // renders with its default and the run goes green about the wrong picture.
+  const { params, warnings } = toParameterMap({
+    parameters: { 'button--primary': { globals: { theme: 'dark', thmee: 'dark' } } },
+    allowedGlobals: ['theme', 'locale'],
+  })
+
+  assert.deepEqual(params['button--primary'].globals, { theme: 'dark', thmee: 'dark' })
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /thmee/)
+})
+
+test('when the page could not say which globals exist, none of them are accused', () => {
+  // Best effort on a Storybook internal. A false accusation about a working
+  // global is worse than saying nothing.
+  const { warnings } = toParameterMap({
+    parameters: { 'button--primary': { globals: { anything: 'at all' } } },
+    allowedGlobals: null,
+  })
+
+  assert.deepEqual(warnings, [])
 })

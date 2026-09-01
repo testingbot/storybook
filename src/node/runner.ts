@@ -621,7 +621,7 @@ async function captureStory ({
   const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
 
   for (const key of rejected) {
-    notify(`${story.id}: the arg "${key}" cannot travel in a URL, so the story rendered with its default.`)
+    notify(`${story.id}: "${key}" cannot travel in a URL, so the story rendered with its default.`)
   }
 
   let actual: Buffer
@@ -993,7 +993,7 @@ async function captureStoryOnDevice ({
   const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
 
   for (const key of rejected) {
-    notify(`${story.id}: the arg "${key}" cannot travel in a URL, so the story rendered with its default.`)
+    notify(`${story.id}: "${key}" cannot travel in a URL, so the story rendered with its default.`)
   }
 
   let actual: Buffer

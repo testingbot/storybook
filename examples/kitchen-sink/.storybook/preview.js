@@ -16,5 +16,17 @@ export default {
 
   initialGlobals: {
     backgrounds: { value: 'white' },
+    theme: 'light',
+  },
+
+  /**
+   * Declared so the addon's `globals` parameter has something real to switch.
+   * Storybook drops a URL global that is not declared here or in
+   * initialGlobals, and says so only in the page's own console, so a story
+   * that switched an undeclared global would look green and render its
+   * default.
+   */
+  globalTypes: {
+    theme: { description: 'Light or dark', defaultValue: 'light' },
   },
 }

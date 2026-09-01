@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from './Button.jsx'
 
 /**
- * TB-353: the three per-story parameters, one story each.
+ * TB-353: the per-story parameters, one story each.
  *
  * These exist to be run against the grid, not to look at. Each one fails
  * visibly if the parameter is not honoured: the skipped story renders a red
@@ -57,4 +57,46 @@ function Late () {
 export const WaitsForContent = {
   parameters: { testingbot: { waitForSelector: '[data-testid="loaded"]' } },
   render: () => <Late />,
+}
+
+/**
+ * The theme global defaults to light, and this story asks for dark. A
+ * screenshot on white reading "light" means the globals parameter did nothing.
+ */
+export const WithGlobals = {
+  parameters: { testingbot: { globals: { theme: 'dark' } } },
+  render: (args, { globals }) => {
+    const dark = globals.theme === 'dark'
+
+    return (
+      <p
+        style={{
+          background: dark ? '#1a1a1a' : '#ffffff',
+          color: dark ? '#ffffff' : '#1a1a1a',
+          border: '2px solid #1a73e8',
+          font: '500 16px system-ui',
+          padding: 16,
+        }}
+      >
+        theme is {globals.theme}
+      </p>
+    )
+  },
+}
+
+/**
+ * Reads the query string the way an app would, rather than through Storybook.
+ * A screenshot reading "no banner" means queryParams never reached the iframe.
+ */
+export const WithQueryParams = {
+  parameters: { testingbot: { queryParams: { banner: 'from the query string' } } },
+  render: () => {
+    const banner = new URLSearchParams(window.location.search).get('banner')
+
+    return (
+      <p style={{ border: '2px solid #1a73e8', font: '500 16px system-ui', padding: 16 }}>
+        {banner ?? 'no banner'}
+      </p>
+    )
+  },
 }

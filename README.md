@@ -92,6 +92,10 @@ export const Loading = {
       waitTimeout: 30000,
       // Render with these args instead of the story's own.
       args: { variant: 'danger' },
+      // Switch a Storybook global, which is usually theme or locale.
+      globals: { theme: 'dark' },
+      // Extra query string parameters, for a story whose app reads them.
+      queryParams: { token: 'preview' },
     },
   },
 }
@@ -99,13 +103,26 @@ export const Loading = {
 
 They work the same on desktop browsers, real Android and real iPhones.
 
-Three things are worth knowing. `skip` is reported rather than silent, because a
+A few things are worth knowing. `skip` is reported rather than silent, because a
 run that quietly covered one story fewer would still say everything matched.
-`args` are encoded exactly as Storybook's own toolbar encodes them, which means
-Storybook's restrictions apply: an arg it would refuse to put in a URL is left
-out and named, and the story renders with its default. And `args` do not change
-the baseline name, because a story that always renders with the same args always
-renders the same way.
+
+`args` and `globals` are encoded exactly as Storybook's own toolbar encodes
+them, which means Storybook's restrictions apply: a value it would refuse to put
+in a URL is left out and named, and the story renders with its default.
+
+A global has to be one your Storybook declares, in `initialGlobals` or
+`globalTypes` in `.storybook/preview.js`. Storybook drops an undeclared global
+and says so only in the browser's own console, so the addon checks the names
+itself and tells you which one was ignored.
+
+`queryParams` are ordinary query string parameters, encoded normally, for a
+story whose app reads `window.location.search` rather than going through
+Storybook. `id`, `viewMode`, `args` and `globals` are refused there, because the
+addon sets them and a second `id` would screenshot a different story under this
+story's name.
+
+None of them change the baseline name, because a story that always renders the
+same way always renders the same way.
 
 Storybook does not publish parameters in `/index.json`, so they can only be read
 from a loaded preview. Each target reads them once, from the grid browser, which
@@ -473,7 +490,7 @@ panel keeps working unchanged.
 | Actionable errors for missing Java, bad credentials, exhausted plan or tunnel limit | Working |
 | Browser and device picker from your account's live capability list | Working |
 | Run by story, component or everything, with live progress and cancel | Working |
-| Per-story `parameters.testingbot`: skip, waitForSelector, args | Working |
+| Per-story `parameters.testingbot`: skip, waitForSelector, args, globals, queryParams | Working |
 | Several viewport widths in one run, desktop only | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
 | Real Android over Playwright, real iOS over WebDriver | Working |

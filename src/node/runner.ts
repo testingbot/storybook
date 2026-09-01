@@ -4,7 +4,7 @@ import { _android, chromium, firefox, webkit } from 'playwright-core'
 
 import type { BrowserType, Page } from 'playwright-core'
 
-import { getAccountLimits, resolveConcurrency } from './account.js'
+import { getAccountLimits, resolveConcurrency, resolvePhysicalConcurrency } from './account.js'
 import { baselineDir, baselinePath, readBaseline, resultPath, writeImage } from './baselines.js'
 import { deviceDriverFor } from './device-url.js'
 import {
@@ -39,6 +39,7 @@ import {
   buildCapabilities,
   buildWsEndpoint,
   DEFAULT_VIEWPORT,
+  isPhysicalDevice,
   resolveWidths,
   toTargets,
   variantsFor,
@@ -68,8 +69,9 @@ import type {
  * screenshot with animations disabled.
  *
  * What is added here is everything a one-off spec did not have to care about:
- * one session per browser config rather than one per test, a concurrency cap
- * taken from the account, baselines kept per target, and cancellation that
+ * one session per browser config rather than one per test, two concurrency
+ * caps taken from the account because VMs and physical devices are counted
+ * separately, baselines kept per target, and cancellation that
  * actually closes grid sessions instead of leaving them to time out and bill.
  */
 
@@ -307,10 +309,31 @@ export async function runOnGrid ({
       throwIfAborted(signal)
 
       const limits = await getAccountLimits(credentials)
-      const concurrency = resolveConcurrency(limits, targets.length)
       const build = `storybook-${new Date().toISOString().replace(/[:.]/g, '-')}`
 
-      await pool(targets, concurrency, async (target) => {
+      // Two budgets, because the account has two. A physical phone and a
+      // desktop VM do not compete for the same slot, so one pool spending both
+      // would either queue devices at the grid or hold browsers back to the
+      // device limit. Which one it did would depend on the plan, which is the
+      // worst kind of behaviour to have to explain.
+      const physical = targets.filter(isPhysicalDevice)
+      const virtual = targets.filter((target) => !isPhysicalDevice(target))
+      const virtualLanes = resolveConcurrency(limits, virtual.length)
+      const physicalLanes = resolvePhysicalConcurrency(limits, physical.length)
+
+      // Said out loud, because "why is this slower than I expected" otherwise
+      // has no answer visible from here: the number depends on the plan and on
+      // what the account is already running, neither of which the developer can
+      // see from this terminal.
+      onProgress({
+        phase: 'tunnel',
+        message: [
+          virtual.length > 0 ? `${virtualLanes} of ${virtual.length} browser${virtual.length === 1 ? '' : 's'}` : null,
+          physical.length > 0 ? `${physicalLanes} of ${physical.length} device${physical.length === 1 ? '' : 's'}` : null,
+        ].filter(Boolean).join(' and ') + ' at a time',
+      })
+
+      const runOne = async (target: RunTarget): Promise<void> => {
         const args = {
           target,
           stories,
@@ -359,7 +382,19 @@ export async function runOnGrid ({
         for (const variant of outcome.reported) {
           sessions.push({ key: variant.key, label: variant.label, sessionId: outcome.sessionId })
         }
-      })
+      }
+
+      // Settled rather than raced: Promise.all would return on the first
+      // rejection with the other pool still opening sessions, and the finally
+      // below would then stop the tunnel out from under them.
+      const outcomes = await Promise.allSettled([
+        pool(virtual, virtualLanes, runOne),
+        pool(physical, physicalLanes, runOne),
+      ])
+
+      const failure = outcomes.find((outcome) => outcome.status === 'rejected')
+
+      if (failure) throw (failure as PromiseRejectedResult).reason
     } finally {
       // Always, including on cancellation. A tunnel left running holds one of the
       // account's slots and the next run fails with CONCURRENCY_EXHAUSTED.

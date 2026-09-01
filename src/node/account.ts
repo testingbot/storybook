@@ -60,7 +60,8 @@ export async function getAccountLimits (credentials: Credentials): Promise<Accou
 }
 
 /**
- * How many sessions to open at once.
+ * How many VM sessions to open at once: desktop browsers, and the simulators
+ * and emulators, which are software on a machine rather than hardware.
  *
  * Sessions already running elsewhere count against the same limit, so they are
  * subtracted. The floor is 1: refusing to run because the account is busy would
@@ -68,6 +69,27 @@ export async function getAccountLimits (credentials: Credentials): Promise<Accou
  */
 export function resolveConcurrency (limits: AccountLimits, targetCount: number): number {
   const free = limits.maxConcurrent - limits.currentVm
+
+  return Math.max(1, Math.min(targetCount, free))
+}
+
+/**
+ * How many physical device sessions to open at once.
+ *
+ * A real phone is not a VM and the account counts it separately: /v1/user
+ * returns exactly two current counters, current_vm_concurrency and
+ * current_physical_concurrency, against max_concurrent and
+ * max_concurrent_mobile respectively.
+ *
+ * Spending both kinds out of one budget is how an account with four VM slots
+ * and one device slot puts two phones in flight at once, which the grid answers
+ * by queueing the second with nothing useful attached. That is precisely the
+ * opaque failure this file exists to prevent, so the two budgets are kept
+ * apart rather than approximated by the smaller of them, which would also make
+ * every browser run at device speed.
+ */
+export function resolvePhysicalConcurrency (limits: AccountLimits, targetCount: number): number {
+  const free = limits.maxConcurrentMobile - limits.currentPhysical
 
   return Math.max(1, Math.min(targetCount, free))
 }

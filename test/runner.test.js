@@ -13,6 +13,8 @@ import {
   browserTypeFor,
   compareImages,
   resolveConcurrency,
+  resolvePhysicalConcurrency,
+  isPhysicalDevice,
   baselinePath,
   resultPath,
 } from '../dist/index.js'
@@ -236,6 +238,41 @@ test('concurrency respects the account limit and what it is already using', () =
     resolveConcurrency({ ...limits, currentVm: 9 }, 20), 1,
     'a busy account runs slowly rather than not at all',
   )
+})
+
+test('physical devices are scheduled out of their own budget, not the VM one', () => {
+  // The account has two limits because the grid has two kinds of capacity. An
+  // account with room for four browsers and one phone must not put two phones
+  // in flight: the grid answers that by queueing the second one with nothing
+  // useful attached, which reads as the grid misbehaving rather than as this
+  // addon over-scheduling.
+  const limits = { maxConcurrent: 4, maxConcurrentMobile: 1, currentVm: 0, currentPhysical: 0 }
+
+  assert.equal(resolveConcurrency(limits, 4), 4)
+  assert.equal(resolvePhysicalConcurrency(limits, 4), 1)
+
+  // And the reverse: a device-heavy plan must not throttle the browsers to the
+  // device limit, which is what one shared budget would have done.
+  const deviceHeavy = { maxConcurrent: 1, maxConcurrentMobile: 5, currentVm: 0, currentPhysical: 0 }
+
+  assert.equal(resolvePhysicalConcurrency(deviceHeavy, 5), 5)
+  assert.equal(resolveConcurrency(deviceHeavy, 5), 1)
+
+  // Devices someone else's run already booked come off this budget too.
+  assert.equal(resolvePhysicalConcurrency({ ...deviceHeavy, currentPhysical: 3 }, 5), 2)
+  assert.equal(resolvePhysicalConcurrency({ ...deviceHeavy, currentPhysical: 9 }, 5), 1)
+})
+
+test('a simulator is counted as a VM, and an unmarked device as physical', () => {
+  const targets = toTargets({
+    browsers: [{ browserName: 'chrome', platform: 'WIN11' }],
+    devices: [
+      { deviceName: 'iPhone 17', platformName: 'iOS', platformVersion: '26.0' },
+      { deviceName: 'iPhone 17', platformName: 'iOS', platformVersion: '26.0', realDevice: false },
+    ],
+  })
+
+  assert.deepEqual(targets.map(isPhysicalDevice), [false, true, false])
 })
 
 test('baseline and result paths are separate trees and are safe to build from story ids', () => {

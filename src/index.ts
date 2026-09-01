@@ -21,6 +21,7 @@ export { runOnGrid, applyScope, RunError } from './node/runner.js'
 export type { RunScope } from './node/runner.js'
 export {
   toTargets,
+  isPhysicalDevice,
   buildCapabilities,
   buildAndroidCapabilities,
   buildWsEndpoint,
@@ -64,7 +65,7 @@ export {
   approvableStories,
   markApproved,
 } from './node/run-store.js'
-export { getAccountLimits, resolveConcurrency } from './node/account.js'
+export { getAccountLimits, resolveConcurrency, resolvePhysicalConcurrency } from './node/account.js'
 export {
   baselineDir,
   resultsDir,

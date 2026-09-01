@@ -53,6 +53,19 @@ function simulatedLabel (spec: TargetSpec): string {
   return String(spec.platformName ?? '').toLowerCase() === 'ios' ? 'simulator' : 'emulator'
 }
 
+/**
+ * Whether this target occupies one of the account's physical device slots.
+ *
+ * A simulator or an emulator has kind "device" too, but it is software on a
+ * machine and the account counts it as a VM. The test is written so that an
+ * unspecified realDevice reads as physical, matching the config default: being
+ * wrong in that direction only schedules too few sessions, and being wrong in
+ * the other direction is the queueing this distinction exists to avoid.
+ */
+export function isPhysicalDevice (target: RunTarget): boolean {
+  return target.kind === 'device' && target.spec.realDevice !== false
+}
+
 export function toTargets (config: ProjectConfig): RunTarget[] {
   const browsers = (config.browsers ?? []).map((spec): RunTarget => {
     const base = [spec.browserName, spec.browserVersion, spec.platform].map(sanitise)

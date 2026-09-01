@@ -306,10 +306,31 @@ export function partitionSkipped (
   const skipped: StoryEntry[] = []
 
   for (const story of stories) {
-    (params[story.id]?.skip === true ? skipped : run).push(story)
+    (isSkipped(story, stories, params) ? skipped : run).push(story)
   }
 
   return { run, skipped }
+}
+
+/**
+ * A docs page is not in `preview.extract()`, so it never has parameters of its
+ * own, so `skip: true` on a component's meta would skip every one of its
+ * stories and then screenshot its autodocs page anyway. That is the surprise
+ * this inherits away: an autodocs page whose every sibling story is skipped is
+ * skipped too, because the meta that skipped them generated it.
+ *
+ * An unattached MDX page has no siblings and inherits nothing, which is right:
+ * nobody said anything about it.
+ */
+function isSkipped (story: StoryEntry, all: StoryEntry[], params: ParameterMap): boolean {
+  const own = params[story.id]
+
+  if (own) return own.skip === true
+  if (story.type !== 'docs') return false
+
+  const siblings = all.filter((entry) => entry.type === 'story' && entry.title === story.title)
+
+  return siblings.length > 0 && siblings.every((entry) => params[entry.id]?.skip === true)
 }
 
 /**
@@ -327,10 +348,13 @@ export function partitionSkipped (
  */
 export function storyUrl (
   devServerUrl: string,
-  storyId: string,
+  story: StoryEntry,
   parameters: StoryParameters | undefined,
 ): { url: string; rejected: string[] } {
-  const query = [`id=${encodeURIComponent(storyId)}`, 'viewMode=story']
+  // A docs page under viewMode=story renders nothing at all, so this follows the
+  // index rather than assuming. See TB-357.
+  const viewMode = story.type === 'docs' ? 'docs' : 'story'
+  const query = [`id=${encodeURIComponent(story.id)}`, `viewMode=${viewMode}`]
   const rejected: string[] = []
 
   // Args and globals are the same encoding, because Storybook parses both with

@@ -9,9 +9,11 @@
 
 /** @type {import('@storybook/react-vite').StorybookConfig} */
 export default {
-  stories: ['../src/**/*.stories.jsx'],
+  stories: ['../src/**/*.mdx', '../src/**/*.stories.jsx'],
 
   addons: [
+    // Docs pages are a target of their own: see "captureDocs" in .testingbot.json.
+    '@storybook/addon-docs',
     // Configuration lives in .testingbot.json rather than here, so the CLI and
     // the panel read the same file. Options set here would win over it, which
     // is the right default for a project that never uses the CLI and the wrong

@@ -76,6 +76,14 @@ const DEFAULT_CONFIG = {
    * not. That is a decision for the project, not a default.
    */
   visual: 'local',
+  /**
+   * Docs pages are not captured unless asked for. Every captured page is a
+   * paid grid session, and a docs page is mostly a composition of stories that
+   * are already covered individually, so this catches regressions in the docs
+   * template rather than in the components. Opt in, per TB-357.
+   */
+  captureDocs: false,
+  captureAutodocs: false,
 }
 
 /**
@@ -166,7 +174,18 @@ function normaliseConfig (raw) {
     return { config: { ...DEFAULT_CONFIG }, removed }
   }
 
-  const { browsers, devices, include, exclude, maxDiffPixelRatio, visual, widths, ...unknown } = raw
+  const {
+    browsers,
+    devices,
+    include,
+    exclude,
+    maxDiffPixelRatio,
+    visual,
+    widths,
+    captureDocs,
+    captureAutodocs,
+    ...unknown
+  } = raw
 
   const normalisedBrowsers = (Array.isArray(browsers) ? browsers : [])
     .filter(isPlainObject)
@@ -196,6 +215,10 @@ function normaliseConfig (raw) {
       visual: visual === 'hosted' ? 'hosted' : 'local',
       // Only when there is something to say. See normaliseWidths.
       ...(normalisedWidths ? { widths: normalisedWidths } : {}),
+      // Strictly true, never truthy. "captureDocs": "no" is a mistake that must
+      // not read as yes and bill for every docs page in the project.
+      captureDocs: captureDocs === true,
+      captureAutodocs: captureAutodocs === true,
       // Keys this addon has no opinion about are carried through untouched, so
       // a Save from the panel never destroys something a human put here.
       ...unknown,
@@ -214,7 +237,19 @@ function mergeOptions (fileConfig, addonOptions) {
   // Storybook's own keys arrive in the same object as the addon's options, so
   // only the config-shaped ones are taken.
   const relevant = {}
-  for (const key of ['browsers', 'devices', 'include', 'exclude', 'maxDiffPixelRatio', 'deviceUrl', 'visual', 'hostedVisual', 'widths']) {
+  for (const key of [
+    'browsers',
+    'devices',
+    'include',
+    'exclude',
+    'maxDiffPixelRatio',
+    'deviceUrl',
+    'visual',
+    'hostedVisual',
+    'widths',
+    'captureDocs',
+    'captureAutodocs',
+  ]) {
     if (key in addonOptions) relevant[key] = addonOptions[key]
   }
 

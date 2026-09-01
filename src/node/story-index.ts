@@ -8,8 +8,11 @@ import type { StoryEntry } from './types.js'
  * by hand, which is how the proven spec in the example repo works
  * (tests/storybook.spec.mjs).
  *
- * Non-story entries are filtered out: docs pages render MDX chrome, not the
- * component, so screenshotting them produces noise rather than coverage.
+ * Docs pages come back too, but nothing runs them unless the project asks:
+ * see selectStories. A docs page is a real page that can regress, and for a
+ * design system it is often the page people actually look at, but it is mostly
+ * a composition of stories that are already covered one by one, so paying for a
+ * grid session per docs page is a choice rather than a default. TB-357.
  */
 
 const INDEX_TIMEOUT_MS = 30_000
@@ -24,9 +27,17 @@ export class StoryIndexError extends Error {
   }
 }
 
+type RawEntry = {
+  id?: string
+  title?: string
+  name?: string
+  type?: string
+  tags?: unknown
+}
+
 type RawIndex = {
   v?: number
-  entries?: Record<string, { id?: string; title?: string; name?: string; type?: string }>
+  entries?: Record<string, RawEntry>
 }
 
 /**
@@ -78,12 +89,26 @@ export async function fetchStoryIndex (
   }
 
   return Object.values(entries)
-    .filter((entry) => entry && entry.type === 'story' && typeof entry.id === 'string')
+    .filter((entry) => entry && typeof entry.id === 'string')
+    .filter((entry) => entry.type === 'story' || entry.type === 'docs')
     .map((entry) => ({
       id: entry.id as string,
       title: entry.title ?? '',
       name: entry.name ?? '',
+      type: entry.type as 'story' | 'docs',
+      tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
     }))
+}
+
+/**
+ * A generated autodocs page, as opposed to a hand written MDX one.
+ *
+ * The tag is only meaningful on a docs entry: a story inherits `autodocs` from
+ * the meta that generated the page, so testing the tag alone would call every
+ * story in an autodocs component a docs page.
+ */
+export function isAutodocs (entry: StoryEntry): boolean {
+  return entry.type === 'docs' && entry.tags.includes('autodocs')
 }
 
 function ensureTrailingSlash (url: string): string {
@@ -119,11 +144,16 @@ function matchesAny (story: StoryEntry, patterns: string[]): boolean {
 }
 
 /**
- * Applies scope, include and exclude in that order.
+ * Applies scope, docs capture, include and exclude in that order.
  *
  * Exclude wins over include, which is the convention every tool with both
  * settings uses, and the only one that lets "everything in this folder except
  * the flaky one" be expressed.
+ *
+ * A named `storyId` skips the docs settings entirely. Asking for one page by id
+ * is an explicit request for that page, and answering "no stories matched"
+ * because a setting the developer did not know about is off would send them
+ * looking in the wrong place.
  */
 export function selectStories (
   stories: StoryEntry[],
@@ -131,13 +161,26 @@ export function selectStories (
     storyId = null,
     include = [],
     exclude = [],
-  }: { storyId?: string | null; include?: string[]; exclude?: string[] } = {},
+    captureDocs = false,
+    captureAutodocs = false,
+  }: {
+    storyId?: string | null
+    include?: string[]
+    exclude?: string[]
+    captureDocs?: boolean
+    captureAutodocs?: boolean
+  } = {},
 ): StoryEntry[] {
   if (storyId) {
     return stories.filter((story) => story.id === storyId)
   }
 
   return stories
+    .filter((story) => {
+      if (story.type !== 'docs') return true
+
+      return isAutodocs(story) ? captureAutodocs : captureDocs
+    })
     .filter((story) => (include.length === 0 ? true : matchesAny(story, include)))
     .filter((story) => !matchesAny(story, exclude))
 }

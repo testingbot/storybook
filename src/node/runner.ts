@@ -69,6 +69,14 @@ import type {
 const CONNECT_TIMEOUT_MS = 180_000
 const GOTO_TIMEOUT_MS = 60_000
 const ROOT_SELECTOR = '#storybook-root'
+/**
+ * Storybook renders a docs page into its own element and leaves #storybook-root
+ * empty, so a docs capture aimed at the story root would wait fifteen seconds
+ * and then screenshot nothing. Confirmed against a Storybook 10.5 build:
+ * iframe.html carries both elements, and the preview's own docsRoot() returns
+ * this one.
+ */
+const DOCS_SELECTOR = '#storybook-docs'
 const SETTLE_QUIET_MS = 500
 const SETTLE_TIMEOUT_MS = 15_000
 /**
@@ -182,6 +190,8 @@ export async function runOnGrid ({
     storyId: null,
     include: config.include ?? [],
     exclude: config.exclude ?? [],
+    captureDocs: config.captureDocs === true,
+    captureAutodocs: config.captureAutodocs === true,
   })
 
   if (stories.length === 0) {
@@ -357,7 +367,22 @@ function describeEmptySelection (
     return `Every story in this component is excluded by "include" or "exclude" in the config.`
   }
 
-  return `No stories matched. Storybook published ${allStories.length}; check "include" and "exclude".`
+  const published = allStories.filter((story) => story.type === 'story').length
+  const docs = allStories.length - published
+
+  // Naming the docs pages matters here. Without it, a Storybook that is nothing
+  // but MDX reports "Storybook published 0" and sends the developer looking for
+  // a broken index rather than for a setting that is off.
+  const aside = docs > 0
+    ? ` ${docs} docs page${docs === 1 ? '' : 's'} were not run: see "captureDocs" and "captureAutodocs".`
+    : ''
+
+  return `No stories matched. Storybook published ${published}; check "include" and "exclude".${aside}`
+}
+
+/** Where this entry renders. The index says which, so nothing has to guess. */
+function rootSelectorFor (story: StoryEntry): string {
+  return story.type === 'docs' ? DOCS_SELECTOR : ROOT_SELECTOR
 }
 
 /** What both drivers need. Identical on purpose: the caller picks the driver. */
@@ -618,7 +643,8 @@ async function captureStory ({
   notify: (message: string) => void
 }): Promise<StoryResult | null> {
   const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: targetKey }
-  const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
+  const root = rootSelectorFor(story)
+  const { url, rejected } = storyUrl(devServerUrl, story, parameters)
 
   for (const key of rejected) {
     notify(`${story.id}: "${key}" cannot travel in a URL, so the story rendered with its default.`)
@@ -628,7 +654,7 @@ async function captureStory ({
 
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS })
-    await page.waitForSelector(ROOT_SELECTOR, { timeout: GOTO_TIMEOUT_MS })
+    await page.waitForSelector(root, { timeout: GOTO_TIMEOUT_MS })
 
     // The story's own precondition, before the generic settle wait: a component
     // that fetches has nothing to settle until its data arrives.
@@ -641,7 +667,7 @@ async function captureStory ({
     // Fonts change metrics, so a screenshot taken before they load is a
     // different image every time depending on cache warmth.
     await page.evaluate(() => document.fonts.ready)
-    await waitForStableStory(page)
+    await waitForStableStory(page, root)
 
     const renderError = await storyRenderError(page)
 
@@ -669,7 +695,7 @@ async function captureStory ({
 
       const response = await visualSnapshot(
         page,
-        buildSnapshotArguments(name, buildSnapshotOptions(config, ROOT_SELECTOR)),
+        buildSnapshotArguments(name, buildSnapshotOptions(config, root)),
       )
 
       return mapSnapshotResponse(response, base)
@@ -691,7 +717,7 @@ async function captureStory ({
      */
     actual = config.fullPage === true
       ? await page.screenshot({ animations: 'disabled', fullPage: true, type: 'png' })
-      : await page.locator(ROOT_SELECTOR).screenshot({ animations: 'disabled', type: 'png' })
+      : await page.locator(root).screenshot({ animations: 'disabled', type: 'png' })
   } catch (error) {
     // Cancelling closes the browser under the running command, so the error
     // here describes the teardown rather than the story.
@@ -798,7 +824,7 @@ function recordStory ({
  * screenshotted anyway once the cap is reached. Refusing to produce an image
  * would be worse than producing one that may differ.
  */
-async function waitForStableStory (page: Page): Promise<void> {
+async function waitForStableStory (page: Page, selector: string): Promise<void> {
   try {
     await page.waitForFunction(
       ({ selector, quietMs }) => {
@@ -820,7 +846,7 @@ async function waitForStableStory (page: Page): Promise<void> {
 
         return now - (state.__tbSince ?? now) >= quietMs
       },
-      { selector: ROOT_SELECTOR, quietMs: SETTLE_QUIET_MS },
+      { selector, quietMs: SETTLE_QUIET_MS },
       { timeout: SETTLE_TIMEOUT_MS, polling: 100 },
     )
   } catch {
@@ -990,7 +1016,8 @@ async function captureStoryOnDevice ({
   notify: (message: string) => void
 }): Promise<StoryResult | null> {
   const base: Pick<StoryResult, 'storyId' | 'target'> = { storyId: story.id, target: targetKey }
-  const { url, rejected } = storyUrl(devServerUrl, story.id, parameters)
+  const root = rootSelectorFor(story)
+  const { url, rejected } = storyUrl(devServerUrl, story, parameters)
 
   for (const key of rejected) {
     notify(`${story.id}: "${key}" cannot travel in a URL, so the story rendered with its default.`)
@@ -1011,7 +1038,7 @@ async function captureStoryOnDevice ({
       )
     }
 
-    await waitForStableStoryOnDevice(session, signal)
+    await waitForStableStoryOnDevice(session, root, signal)
 
     const renderError = await storyRenderErrorOnDevice(session)
 
@@ -1048,13 +1075,13 @@ async function captureStoryOnDevice ({
       }
 
       const response = await session.execute(
-        buildSnapshotScript(name, buildSnapshotOptions(config, ROOT_SELECTOR)),
+        buildSnapshotScript(name, buildSnapshotOptions(config, root)),
       )
 
       return mapSnapshotResponse(response, base)
     }
 
-    const element = config.fullPage === true ? null : await session.findElement(ROOT_SELECTOR)
+    const element = config.fullPage === true ? null : await session.findElement(root)
 
     try {
       actual = await session.screenshot(element)
@@ -1110,7 +1137,11 @@ async function waitForSelectorOnDevice (
  * The per-poll state lives on `window`, so a navigation resets it, which is
  * exactly what should happen between stories.
  */
-async function waitForStableStoryOnDevice (session: WebDriverSession, signal: AbortSignal): Promise<void> {
+async function waitForStableStoryOnDevice (
+  session: WebDriverSession,
+  selector: string,
+  signal: AbortSignal,
+): Promise<void> {
   const script = `
     var selector = arguments[0], quietMs = arguments[1];
     var element = document.querySelector(selector);
@@ -1132,7 +1163,7 @@ async function waitForStableStoryOnDevice (session: WebDriverSession, signal: Ab
     if (signal.aborted) return
 
     try {
-      if (await session.execute(script, [ROOT_SELECTOR, SETTLE_QUIET_MS]) === true) return
+      if (await session.execute(script, [selector, SETTLE_QUIET_MS]) === true) return
     } catch {
       // A script that cannot run at all means the page is not ready yet, or the
       // story never renders. Either way the deadline below is the answer.

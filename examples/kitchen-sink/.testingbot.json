@@ -12,6 +12,8 @@
 
   "exclude": ["escapes-portal--modal"],
 
+  "captureDocs": true,
+
   "maxDiffPixelRatio": 0.001,
 
   "visual": "local"

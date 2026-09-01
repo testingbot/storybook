@@ -55,6 +55,9 @@ What to run
   --exclude <glob>       Skip stories whose id or title matches. Repeatable.
   --device-url <url>     The URL real devices should open. Only needed when this
                          machine's network address is not reachable from one.
+  --capture-docs         Also capture hand written MDX docs pages.
+  --capture-autodocs     Also capture the docs pages generated from
+                         tags: ['autodocs'].
 
 Output
   --json                 Write the full result as JSON to stdout.
@@ -91,6 +94,8 @@ type Options = {
   include: string[]
   exclude: string[]
   deviceUrl: string | null
+  captureDocs: boolean
+  captureAutodocs: boolean
   json: boolean
   jsonFile: string | null
   quiet: boolean
@@ -115,6 +120,8 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
         include: { type: 'string', multiple: true, default: [] },
         exclude: { type: 'string', multiple: true, default: [] },
         'device-url': { type: 'string' },
+        'capture-docs': { type: 'boolean', default: false },
+        'capture-autodocs': { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         'json-file': { type: 'string' },
         quiet: { type: 'boolean', default: false },
@@ -160,6 +167,8 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
     include: values.include as string[],
     exclude: values.exclude as string[],
     deviceUrl: (values['device-url'] as string | undefined) ?? null,
+    captureDocs: values['capture-docs'] as boolean,
+    captureAutodocs: values['capture-autodocs'] as boolean,
     json: values.json as boolean,
     jsonFile: (values['json-file'] as string | undefined) ?? null,
     quiet: values.quiet as boolean,
@@ -300,6 +309,10 @@ async function main (argv: string[]): Promise<number> {
     ...config,
     ...(options.include.length ? { include: options.include } : {}),
     ...(options.exclude.length ? { exclude: options.exclude } : {}),
+    // One way only. A flag can turn docs capture on for a run; it cannot turn
+    // off what the project committed, because its absence is not a request.
+    ...(options.captureDocs ? { captureDocs: true } : {}),
+    ...(options.captureAutodocs ? { captureAutodocs: true } : {}),
   }
 
   let server: Awaited<ReturnType<typeof serveStatic>> | null = null

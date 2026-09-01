@@ -49,6 +49,19 @@ export type StoryEntry = {
   id: string
   title: string
   name: string
+  /**
+   * What Storybook's index calls this entry. A docs page renders into a
+   * different element, under a different viewMode, so the two cannot be treated
+   * as one thing past this point. See TB-357.
+   */
+  type: 'story' | 'docs'
+  /**
+   * The index tags, kept for one reason: telling a generated autodocs page from
+   * a hand written MDX one, which are separate settings because they are
+   * separate decisions. Story entries inherit the `autodocs` tag from their
+   * meta, so the tag only means what it says on a docs entry.
+   */
+  tags: string[]
 }
 
 /** A browser or device entry from the config, plus whatever extra tb:options the user set. */
@@ -80,6 +93,18 @@ export type ProjectConfig = {
   widths?: number[]
   /** Capture the whole page instead of the story element. See runner.ts. */
   fullPage?: boolean
+  /**
+   * Also capture hand written MDX docs pages. Off by default: a docs page is a
+   * grid session like any other, and most of what it shows is already covered
+   * story by story. TB-357.
+   */
+  captureDocs?: boolean
+  /**
+   * Also capture the docs pages Storybook generates from `tags: ['autodocs']`.
+   * Separate from captureDocs because it is a separate decision: autodocs are
+   * one page per component and arrive without anyone writing them.
+   */
+  captureAutodocs?: boolean
   /**
    * Who does the comparing. "local" compares against a PNG in the repository,
    * "hosted" delegates to TestingBot's visual service. See hosted-visual.ts.

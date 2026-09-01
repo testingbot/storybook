@@ -148,6 +148,46 @@ from a loaded preview. Each target reads them once, from the grid browser, which
 costs one extra page load per target. A Storybook that does not expose a store
 the addon understands runs without per-story settings and says so once.
 
+### Docs pages
+
+Storybook has two kinds of page, and by default the addon runs only one of them.
+Stories are captured; docs pages are not, unless you say so:
+
+```json
+{
+  "captureDocs": true,
+  "captureAutodocs": true
+}
+```
+
+`captureDocs` covers the MDX pages you wrote by hand. `captureAutodocs` covers
+the pages Storybook generates for a component tagged `autodocs`. They are two
+settings because they are two decisions: a hand written page is usually the only
+thing covering itself, while a generated one is mostly a composition of stories
+that are already captured one by one, and every page is a grid session.
+
+`--capture-docs` and `--capture-autodocs` turn them on for a single CLI run. The
+flags only turn capture on: their absence is not a request to override a project
+that committed `true`.
+
+Two things follow from a docs page being a different page rather than a
+different story:
+
+- It is captured as the whole docs container, not cropped to a component, and
+  that container is at least as tall as the viewport. A short docs page is
+  therefore mostly empty space, and `maxDiffPixelRatio` is a fraction of all of
+  it. This is the opposite of the story case above, so a docs page catches
+  layout regressions in the docs template rather than small changes inside one
+  component.
+- It has no `parameters.testingbot` of its own, because Storybook does not
+  publish parameters for docs entries. Use `exclude` to leave one out. The one
+  exception is `skip` on a component whose every story is skipped: its generated
+  docs page is skipped with them, since the meta that skipped them is the meta
+  that generated it.
+
+Naming a docs page by id runs it whether or not these settings are on, because
+asking for one page by id is an explicit request for it.
+
 ### Extra capabilities
 
 Any [TestingBot option](https://testingbot.com/support/web-automate/playwright/options)
@@ -227,7 +267,8 @@ shows up in a pull request. Results are per-run output and should be ignored:
 
 ### What gets screenshotted
 
-The story element (`#storybook-root`), not the whole page. This matters more
+The story element (`#storybook-root`), not the whole page. Docs pages are the
+exception and are covered below. This matters more
 than it sounds. A tolerance is a fraction of the image, so a full page
 screenshot makes the denominator mostly empty space around your component. At
 1280x720 a 2% tolerance is 18,432 pixels, which is larger than most components,
@@ -511,6 +552,7 @@ panel keeps working unchanged.
 | Run by story, component or everything, with live progress and cancel | Working |
 | Per-story `parameters.testingbot`: skip, waitForSelector, args, globals, queryParams | Working |
 | Several viewport widths in one run, desktop only | Working |
+| MDX docs and generated autodocs pages, opt in | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
 | Real Android over Playwright, real iOS over WebDriver | Working |
 | Simulators and emulators, kept apart from physical hardware | Working |

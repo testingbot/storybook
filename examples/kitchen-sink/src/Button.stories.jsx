@@ -3,6 +3,8 @@ import { Button } from './Button.jsx'
 export default {
   title: 'Basics/Button',
   component: Button,
+  // Generates a Basics/Button > Docs page, which is what "captureAutodocs" runs.
+  tags: ['autodocs'],
 }
 
 export const Primary = { args: { variant: 'primary', children: 'Save changes' } }

@@ -3,6 +3,11 @@ import assert from 'node:assert/strict'
 
 import { PARAMETER_KEY, partitionSkipped, storyUrl, toParameterMap } from '../dist/index.js'
 
+/** An index entry, which is what storyUrl and partitionSkipped work on. */
+function entry (id, extra = {}) {
+  return { id, title: 'Basics/Button', name: id, type: 'story', tags: [], ...extra }
+}
+
 /**
  * TB-353: per-story configuration read from Storybook's own parameters.
  *
@@ -83,7 +88,7 @@ test('skipped stories are separated, not dropped', () => {
 })
 
 test('args become Storybook\'s own URL parameter, unencoded', () => {
-  const { url } = storyUrl('http://localhost:6006/', 'button--primary', {
+  const { url } = storyUrl('http://localhost:6006/', entry('button--primary'), {
     args: { label: 'Save changes', disabled: true },
   })
 
@@ -96,20 +101,20 @@ test('args become Storybook\'s own URL parameter, unencoded', () => {
 })
 
 test('a story with no args gets the plain URL, and the story id is still escaped', () => {
-  assert.deepEqual(storyUrl('http://localhost:6006', 'button--primary', undefined), {
+  assert.deepEqual(storyUrl('http://localhost:6006', entry('button--primary'), undefined), {
     url: 'http://localhost:6006/iframe.html?id=button--primary&viewMode=story',
     rejected: [],
   })
 
-  assert.deepEqual(storyUrl('http://localhost:6006', 'button--primary', { args: {} }).url,
+  assert.deepEqual(storyUrl('http://localhost:6006', entry('button--primary'), { args: {} }).url,
     'http://localhost:6006/iframe.html?id=button--primary&viewMode=story')
 
-  const { url } = storyUrl('http://localhost:6006', 'a&b--c', undefined)
+  const { url } = storyUrl('http://localhost:6006', entry('a&b--c'), undefined)
   assert.match(url, /id=a%26b--c/)
 })
 
 test('an arg Storybook would refuse is named and the rest still travel', () => {
-  const { url, rejected } = storyUrl('http://localhost:6006', 'button--primary', {
+  const { url, rejected } = storyUrl('http://localhost:6006', entry('button--primary'), {
     args: { label: 'Save', html: '<img onerror=alert(1)>' },
   })
 
@@ -124,7 +129,7 @@ test('an arg Storybook would refuse is named and the rest still travel', () => {
  */
 
 test('globals travel as their own parameter, in the args encoding', () => {
-  const { url, rejected } = storyUrl('http://localhost:6006', 'button--primary', {
+  const { url, rejected } = storyUrl('http://localhost:6006', entry('button--primary'), {
     args: { label: 'Save' },
     globals: { theme: 'dark', locale: 'en-GB' },
   })
@@ -140,7 +145,7 @@ test('globals travel as their own parameter, in the args encoding', () => {
 test('a rejected key says which parameter it came from', () => {
   // "theme" is a plausible name for both, so an unqualified name would leave
   // the developer editing the wrong object.
-  const { rejected } = storyUrl('http://localhost:6006', 'button--primary', {
+  const { rejected } = storyUrl('http://localhost:6006', entry('button--primary'), {
     args: { theme: '<b>' },
     globals: { theme: '<b>' },
   })
@@ -149,7 +154,7 @@ test('a rejected key says which parameter it came from', () => {
 })
 
 test('queryParams are encoded the ordinary way, unlike args and globals', () => {
-  const { url } = storyUrl('http://localhost:6006', 'button--primary', {
+  const { url } = storyUrl('http://localhost:6006', entry('button--primary'), {
     queryParams: { token: 'a b&c', retries: 3, debug: true },
   })
 
@@ -169,7 +174,7 @@ test('a query parameter the addon sets itself is refused, not merged', () => {
   assert.equal(warnings.length, 2)
   assert.ok(warnings.every((warning) => /addon sets itself/.test(warning)))
 
-  const { url } = storyUrl('http://localhost:6006', 'button--primary', params['button--primary'])
+  const { url } = storyUrl('http://localhost:6006', entry('button--primary'), params['button--primary'])
 
   assert.equal(url.match(/id=/g).length, 1)
 })

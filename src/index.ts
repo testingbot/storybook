@@ -30,7 +30,7 @@ export {
   DEFAULT_VIEWPORT,
 } from './node/targets.js'
 export type { TargetVariant } from './node/targets.js'
-export { fetchStoryIndex, selectStories, StoryIndexError } from './node/story-index.js'
+export { fetchStoryIndex, isAutodocs, selectStories, StoryIndexError } from './node/story-index.js'
 export { compareImages } from './node/image-diff.js'
 export {
   buildSnapshotArguments,

@@ -33,6 +33,7 @@ type RawEntry = {
   name?: string
   type?: string
   tags?: unknown
+  importPath?: unknown
 }
 
 type RawIndex = {
@@ -97,6 +98,7 @@ export async function fetchStoryIndex (
       name: entry.name ?? '',
       type: entry.type as 'story' | 'docs',
       tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
+      importPath: typeof entry.importPath === 'string' ? entry.importPath : '',
     }))
 }
 

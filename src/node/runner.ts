@@ -1,4 +1,7 @@
+import fs from 'node:fs'
+
 import { _android, chromium, firefox, webkit } from 'playwright-core'
+
 import type { BrowserType, Page } from 'playwright-core'
 
 import { getAccountLimits, resolveConcurrency } from './account.js'
@@ -15,6 +18,8 @@ import {
 } from './hosted-visual.js'
 import { compareImages } from './image-diff.js'
 import { writeLastRun } from './run-store.js'
+import { decideAffected, readImporterGraph, StatsError } from './affected.js'
+import { changedFiles, GitError } from './git-changes.js'
 import { applyShard, resolveShard } from './shard.js'
 import { fetchStoryIndex, selectStories } from './story-index.js'
 import {
@@ -133,6 +138,12 @@ export type RunnerArgs = {
    */
   shard?: ShardRequest | null
   /**
+   * Run only the stories the change since `base` can reach. Null runs
+   * everything. `statsFile` is where the build wrote its preview stats, which
+   * the caller knows and this does not. See affected.ts. TB-358.
+   */
+  changes?: { base: string; statsFile: string } | null
+  /**
    * Say up front that this run is not the whole project, even when it is not
    * sharded. A sharded run is partial whether this is set or not.
    */
@@ -152,6 +163,7 @@ export async function runOnGrid ({
   scope = 'all',
   storyId = null,
   shard: shardRequest = null,
+  changes = null,
   partial = false,
   signal,
   onProgress = () => {},
@@ -215,6 +227,18 @@ export async function runOnGrid ({
     )
   }
 
+  // Tracing comes before sharding, so the shards split the work that is going
+  // to be done rather than the work that was avoided. Said out loud in every
+  // case, including when it decided to run everything after all: "why did it
+  // run all four hundred" is the question this feature invites.
+  const traced = changes
+    ? traceChanges(changes, selected, config, projectRoot)
+    : { stories: selected, trace: null, notice: null }
+
+  if (traced.notice) onProgress({ phase: 'notice', message: traced.notice })
+
+  const runnable = traced.stories
+
   // The shard is taken after everything else has had its say, so that
   // "one quarter of the run" means one quarter of what this project actually
   // captures rather than one quarter of the raw index. An out of range index
@@ -223,12 +247,12 @@ export async function runOnGrid ({
   let shard: ShardSpec | null = null
 
   try {
-    shard = shardRequest ? resolveShard(shardRequest, selected.length) : null
+    shard = shardRequest ? resolveShard(shardRequest, runnable.length) : null
   } catch (error) {
     throw new RunError((error as Error).message, 'BAD_SHARD')
   }
 
-  const stories = shard ? applyShard(selected, shard) : selected
+  const stories = shard ? applyShard(runnable, shard) : runnable
 
   // Reported before anything is booted, because it is the number the developer
   // is about to watch tick up and it is not the project's story count.
@@ -364,9 +388,13 @@ export async function runOnGrid ({
     // of the stories and knows nothing about the other three quarters. "ok"
     // above still means "everything this run covered matched", because that is
     // what the exit code has to be or every shard job would fail by design.
+    // A traced run is deliberately not partial. Unlike a shard, it makes a
+    // claim about the stories it did not run: that the change could not reach
+    // them. changeTrace below is what lets a reader check that claim.
     ...(partial || shard ? { partial: true } : {}),
+    ...(traced.trace ? { changeTrace: traced.trace } : {}),
     ...(shard
-      ? { shard: { index: shard.index, count: shard.count, selected: stories.length, total: selected.length } }
+      ? { shard: { index: shard.index, count: shard.count, selected: stories.length, total: runnable.length } }
       : {}),
     baselineDir: baselineDir(projectRoot),
   }
@@ -381,6 +409,79 @@ export async function runOnGrid ({
   }
 
   return result
+}
+
+/**
+ * Decides what a change since `base` can reach. TB-358.
+ *
+ * Two kinds of failure, deliberately handled differently. Not being able to set
+ * the analysis up at all, because there is no stats file or git cannot answer,
+ * is an error: the developer asked to run three stories and quietly running
+ * four hundred instead is a bill they did not agree to, and both causes are a
+ * one line fix in the build command. The analysis deciding to run everything is
+ * not a failure, it is the analysis working, and it says why.
+ */
+function traceChanges (
+  changes: { base: string; statsFile: string },
+  stories: StoryEntry[],
+  config: ProjectConfig,
+  projectRoot: string,
+): { stories: StoryEntry[]; trace: RunResult['changeTrace']; notice: string | null } {
+  const settings = config.onlyChanged ?? {}
+
+  let changed: string[]
+
+  try {
+    changed = changedFiles(projectRoot, changes.base)
+  } catch (error) {
+    throw new RunError(
+      error instanceof GitError ? error.message : (error as Error).message,
+      'NO_CHANGE_BASE',
+    )
+  }
+
+  let graph
+
+  try {
+    graph = readImporterGraph(JSON.parse(fs.readFileSync(changes.statsFile, 'utf8')))
+  } catch (error) {
+    const detail = error instanceof StatsError
+      ? error.message
+      : `Could not read ${changes.statsFile} (${(error as Error).message}).`
+
+    throw new RunError(
+      `${detail} Running only the affected stories needs the stats "storybook build --stats-json" writes.`,
+      'NO_STATS_FILE',
+    )
+  }
+
+  const decision = decideAffected({
+    graph,
+    stories,
+    changed,
+    untraced: settings.untraced ?? [],
+    ...(settings.bailOnChanges ? { bailOnChanges: settings.bailOnChanges } : {}),
+  })
+
+  const base = { base: changes.base, changedFiles: changed.length, reason: decision.reason }
+
+  if (decision.run === 'all') {
+    return {
+      stories,
+      trace: { ...base, tracedTo: null },
+      notice: `Running every story: ${decision.reason}`,
+    }
+  }
+
+  const wanted = new Set(decision.storyIds)
+  const picked = stories.filter((story) => wanted.has(story.id))
+
+  return {
+    stories: picked,
+    trace: { ...base, tracedTo: picked.length },
+    notice: `${changed.length} file${changed.length === 1 ? '' : 's'} changed since ${changes.base}. ` +
+      `${decision.reason} ${stories.length - picked.length} of ${stories.length} stories were not run.`,
+  }
 }
 
 /**

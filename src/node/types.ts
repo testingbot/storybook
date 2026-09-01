@@ -62,6 +62,14 @@ export type StoryEntry = {
    * meta, so the tag only means what it says on a docs entry.
    */
   tags: string[]
+  /**
+   * The file this entry was defined in, as Storybook's index reports it:
+   * project-relative and prefixed with "./". Empty when the index does not say,
+   * which older Storybooks do not. This is the one end of the module graph that
+   * does not have to be guessed at, and it is what "only run what changed" is
+   * built on. See affected.ts. TB-358.
+   */
+  importPath: string
 }
 
 /** A browser or device entry from the config, plus whatever extra tb:options the user set. */
@@ -105,6 +113,19 @@ export type ProjectConfig = {
    * one page per component and arrive without anyone writing them.
    */
   captureAutodocs?: boolean
+  /**
+   * Run only the stories a change can reach, instead of all of them. Off unless
+   * the run asks for it, and it needs a base commit to compare against and a
+   * preview stats file to trace through. See affected.ts. TB-358.
+   */
+  onlyChanged?: {
+    /** Where the build wrote its stats. Relative to the project root. */
+    statsFile?: string
+    /** Files whose change provably cannot affect a story, so it is ignored. */
+    untraced?: string[]
+    /** Files whose change is a full run, without tracing. Replaces the defaults. */
+    bailOnChanges?: string[]
+  }
   /**
    * Who does the comparing. "local" compares against a PNG in the repository,
    * "hosted" delegates to TestingBot's visual service. See hosted-visual.ts.
@@ -173,6 +194,13 @@ export type RunResult = {
    * green shard being read as a green project. TB-356.
    */
   partial?: boolean
+  /**
+   * Set when the run traced a change instead of running everything, with the
+   * reason it decided what it decided. Present on a full run too, when a bail
+   * condition sent it there, because "why did it run all four hundred" is the
+   * question that gets asked. TB-358.
+   */
+  changeTrace?: { base: string; changedFiles: number; reason: string; tracedTo: number | null }
   /** Which slice of the stories this run took, when it was sharded. */
   shard?: {
     /** Counting from zero, as Percy's --shard-index does. */

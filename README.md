@@ -574,6 +574,71 @@ Give each shard its own checkout. They read the same committed baselines, which
 is fine, but `--update-baselines` and `.testingbot/last-run.json` are per
 machine, so a shared working directory would have them overwrite each other.
 
+### Running only the stories a change can reach
+
+Sharding makes a full run faster. `--only-changed` makes most runs smaller:
+
+```bash
+npx testingbot-storybook --only-changed --since origin/main
+```
+
+The addon builds Storybook with `--stats-json`, reads the module graph the build
+writes out, and walks up from every file git says you changed to the stories
+that import it, directly or through any number of hops. A change to a shared
+button reaches every story that renders one. A change to one story file reaches
+only that file's stories.
+
+`--since` is required and has no default. Guessing `main` on a repository whose
+trunk is called something else would run the wrong set of stories and still go
+green. The comparison is `base...HEAD`, so it is against the merge base rather
+than against whatever else has landed on the base branch. Uncommitted and
+untracked work counts as changed, because locally you have not committed yet and
+a tool that ignored your edits would tell you your change was fine without
+having looked at it.
+
+The interesting part is what makes it give up and run everything, and it says so
+every time:
+
+| Situation | What happens |
+| --- | --- |
+| A changed file the module graph has never heard of | Full run, naming the file |
+| A changed file that reaches the preview but no story | Full run |
+| Anything in `bailOnChanges` | Full run, without tracing |
+| Storybook's index does not report `importPath` | Full run |
+| No stats file, or git cannot resolve `--since` | Exit 2, nothing runs |
+
+The first row is the common one: a font, a `public/` asset, a Tailwind config,
+something pulled in by `preview-head.html`. None of those are imported by
+anything, so the graph cannot say what they affect, and the honest answer is
+everything. Tell it once and it stops asking:
+
+```json
+{
+  "onlyChanged": {
+    "untraced": ["*.md", "docs/**", "e2e/**"],
+    "bailOnChanges": [".storybook/**", "package.json", "tailwind.config.js"]
+  }
+}
+```
+
+`untraced` is "this cannot affect a story, ignore it". `bailOnChanges` is "this
+can affect any story, do not bother tracing". The defaults for `bailOnChanges`
+are the Storybook config directory, the package manifest, the lockfiles and
+`.testingbot.json`; setting it to `[]` really does mean never bail. Here `*`
+stops at a directory separator and `**` crosses it, unlike the story-id globs in
+`include` and `exclude`.
+
+Not being able to set the analysis up is a hard failure rather than a quiet full
+run. If the stats file is missing or `--since` names a commit the repository does
+not have, the command exits 2 without capturing anything, because running a
+hundred times the work you asked for is a bill you did not agree to, and both
+causes are one line to fix.
+
+Unlike a shard, a traced run is not marked `"partial"`. It makes a real claim
+about the stories it skipped: the change could not reach them. The JSON result
+carries a `changeTrace` object with the base, the number of changed files and
+the reason, so a CI job can see why a run was as small or as large as it was.
+
 ## Storybook's Testing widget
 
 Results are published to Storybook's own status store, so you get sidebar icons
@@ -600,6 +665,7 @@ panel keeps working unchanged.
 | Several viewport widths in one run, desktop only | Working |
 | MDX docs and generated autodocs pages, opt in | Working |
 | Splitting a run across CI machines with --shard-count and --shard-index | Working |
+| Running only the stories a change can reach, with --only-changed | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
 | Real Android over Playwright, real iOS over WebDriver | Working |
 | Simulators and emulators, kept apart from physical hardware | Working |

@@ -87,6 +87,31 @@ const DEFAULT_CONFIG = {
 }
 
 /**
+ * Settings for "run only the stories a change can reach".
+ *
+ * Absent means the feature is simply off, so there is no entry in
+ * DEFAULT_CONFIG: an empty object here would be indistinguishable from a
+ * project that configured one and would have to be carried through every merge.
+ *
+ * `bailOnChanges` is kept even when it is an empty array, because an empty
+ * array is a real, and quite dangerous, thing to ask for: "never bail". Absent
+ * means the defaults in affected.ts, which is not the same request.
+ */
+function normaliseOnlyChanged (raw) {
+  if (!isPlainObject(raw)) return null
+
+  const strings = (value) => (Array.isArray(value) ? value.filter((entry) => typeof entry === 'string') : null)
+  const untraced = strings(raw.untraced)
+  const bailOnChanges = strings(raw.bailOnChanges)
+
+  return {
+    ...(typeof raw.statsFile === 'string' && raw.statsFile.trim() ? { statsFile: raw.statsFile.trim() } : {}),
+    ...(untraced ? { untraced } : {}),
+    ...(bailOnChanges ? { bailOnChanges } : {}),
+  }
+}
+
+/**
  * Widths are normalised to a sorted, deduplicated list of whole numbers, and
  * omitted entirely when nothing usable is left.
  *
@@ -184,6 +209,7 @@ function normaliseConfig (raw) {
     widths,
     captureDocs,
     captureAutodocs,
+    onlyChanged,
     ...unknown
   } = raw
 
@@ -198,6 +224,7 @@ function normaliseConfig (raw) {
 
   const ratio = Number(maxDiffPixelRatio)
   const normalisedWidths = normaliseWidths(widths)
+  const normalisedOnlyChanged = normaliseOnlyChanged(onlyChanged)
 
   return {
     config: {
@@ -219,6 +246,7 @@ function normaliseConfig (raw) {
       // not read as yes and bill for every docs page in the project.
       captureDocs: captureDocs === true,
       captureAutodocs: captureAutodocs === true,
+      ...(normalisedOnlyChanged ? { onlyChanged: normalisedOnlyChanged } : {}),
       // Keys this addon has no opinion about are carried through untouched, so
       // a Save from the panel never destroys something a human put here.
       ...unknown,
@@ -249,6 +277,7 @@ function mergeOptions (fileConfig, addonOptions) {
     'widths',
     'captureDocs',
     'captureAutodocs',
+    'onlyChanged',
   ]) {
     if (key in addonOptions) relevant[key] = addonOptions[key]
   }

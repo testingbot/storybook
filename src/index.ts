@@ -32,6 +32,9 @@ export {
 export type { TargetVariant } from './node/targets.js'
 export { fetchStoryIndex, isAutodocs, selectStories, StoryIndexError } from './node/story-index.js'
 export { applyShard, resolveShard, validateShardRequest, ShardError } from './node/shard.js'
+export { decideAffected, readImporterGraph, StatsError, DEFAULT_BAIL_ON_CHANGES } from './node/affected.js'
+export type { AffectedDecision, ImporterGraph } from './node/affected.js'
+export { changedFiles, GitError } from './node/git-changes.js'
 export type { ShardRequest, ShardSpec } from './node/shard.js'
 export { compareImages } from './node/image-diff.js'
 export {

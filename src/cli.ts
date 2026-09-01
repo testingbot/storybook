@@ -61,6 +61,14 @@ What to run
   --capture-autodocs     Also capture the docs pages generated from
                          tags: ['autodocs'].
 
+Running only what changed
+  --only-changed         Trace the change since --since through the module graph
+                         and run only the stories it can reach.
+  --since <ref>          The commit or branch to compare against, for example
+                         origin/main. Required by --only-changed.
+  --stats-file <file>    Where the build wrote preview-stats.json. Defaults to
+                         the served directory. Only needed with --url.
+
 Splitting a run across CI machines
   --shard-count <n>      How many machines the stories are spread over.
   --shard-size <n>       How many stories per machine, instead of --shard-count.
@@ -110,6 +118,9 @@ type Options = {
   captureDocs: boolean
   captureAutodocs: boolean
   shard: ShardRequest | null
+  onlyChanged: boolean
+  since: string | null
+  statsFile: string | null
   partial: boolean
   json: boolean
   jsonFile: string | null
@@ -153,6 +164,9 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
         'device-url': { type: 'string' },
         'capture-docs': { type: 'boolean', default: false },
         'capture-autodocs': { type: 'boolean', default: false },
+        'only-changed': { type: 'boolean', default: false },
+        since: { type: 'string' },
+        'stats-file': { type: 'string' },
         'shard-count': { type: 'string' },
         'shard-size': { type: 'string' },
         'shard-index': { type: 'string' },
@@ -194,6 +208,17 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
     throw new UsageError(`--port must be a port number, not ${String(values.port)}.`)
   }
 
+  // A base to compare against is not something to guess at. Defaulting to
+  // "main" would quietly run the wrong set of stories on a repository whose
+  // trunk is called something else, and the run would still be green.
+  if (values['only-changed'] && !values.since) {
+    throw new UsageError('--only-changed needs --since to know what "changed" is measured against, for example --since origin/main.')
+  }
+
+  if (values.since && !values['only-changed']) {
+    throw new UsageError('--since only means something with --only-changed.')
+  }
+
   // Checked here, before a Storybook build takes two minutes to find out that
   // the flags contradict each other. What cannot be checked yet is the index
   // against the story count, and the runner does that.
@@ -227,6 +252,9 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
     captureDocs: values['capture-docs'] as boolean,
     captureAutodocs: values['capture-autodocs'] as boolean,
     shard,
+    onlyChanged: values['only-changed'] as boolean,
+    since: (values.since as string | undefined) ?? null,
+    statsFile: (values['stats-file'] as string | undefined) ?? null,
     partial: values.partial as boolean,
     json: values.json as boolean,
     jsonFile: (values['json-file'] as string | undefined) ?? null,
@@ -236,9 +264,13 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
   }
 }
 
-async function buildStorybook (outDir: string): Promise<void> {
+async function buildStorybook (outDir: string, stats: boolean): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('npx', ['storybook', 'build', '--output-dir', outDir, '--quiet'], {
+    // --stats-json is what writes preview-stats.json next to the build, which
+    // is the module graph --only-changed traces through. Asked for only when
+    // it is needed, since it is another file to write on every build.
+    const args = ['storybook', 'build', '--output-dir', outDir, '--quiet', ...(stats ? ['--stats-json'] : [])]
+    const child = spawn('npx', args, {
       stdio: 'inherit',
       shell: process.platform === 'win32',
     })
@@ -304,6 +336,16 @@ function printSummary (result: RunResult, projectRoot: string, write: (line: str
 
   if (totals.new > 0) {
     write(`  ${totals.new} new baseline${totals.new === 1 ? '' : 's'} written. Commit .testingbot/baselines to make them count.`)
+  }
+
+  if (result.changeTrace) {
+    const { base, changedFiles, reason, tracedTo } = result.changeTrace
+
+    write(`  ${changedFiles} file${changedFiles === 1 ? '' : 's'} changed since ${base}. ${reason}`)
+
+    if (tracedTo === null) {
+      write('  Tracing did not narrow this run: every story ran.')
+    }
   }
 
   if (result.shard) {
@@ -395,17 +437,37 @@ async function main (argv: string[]): Promise<number> {
 
   let server: Awaited<ReturnType<typeof serveStatic>> | null = null
   let devServerUrl: string
+  const configuredStats = typeof config.onlyChanged?.statsFile === 'string' ? config.onlyChanged.statsFile : null
+  let statsFile: string | null = options.statsFile
+    ? path.resolve(options.statsFile)
+    : configuredStats
+      ? path.resolve(projectRoot, configuredStats)
+      : null
   let deviceUrl = options.deviceUrl ?? (typeof config.deviceUrl === 'string' ? config.deviceUrl : null)
 
   try {
     if (options.url) {
       devServerUrl = options.url.replace(/\/$/, '')
+
+      // Nothing was built here, so there is no directory to find the stats in.
+      // Falling through with tracing quietly switched off would run the whole
+      // project and bill for it without ever saying why.
+      if (options.onlyChanged && !statsFile) {
+        throw new Error(
+          '--only-changed needs --stats-file when the Storybook is already being served, ' +
+          'because there is no build directory to find preview-stats.json in.',
+        )
+      }
     } else {
       const dir = options.staticDir ?? path.join(projectRoot, 'storybook-static')
 
+      // The build writes its stats next to itself, so the default needs no
+      // configuration in the case that matters, which is CI running --build.
+      statsFile ??= path.join(path.resolve(dir), 'preview-stats.json')
+
       if (options.build) {
         verbose('Building Storybook...')
-        await buildStorybook(dir)
+        await buildStorybook(dir, options.onlyChanged)
       }
 
       server = await serveStatic(dir, options.port)
@@ -448,6 +510,9 @@ async function main (argv: string[]): Promise<number> {
       devServerUrl,
       deviceUrl,
       shard: options.shard,
+      changes: options.onlyChanged && options.since && statsFile
+        ? { base: options.since, statsFile }
+        : null,
       partial: options.partial,
       signal: controller.signal,
       projectRoot,

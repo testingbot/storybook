@@ -16,3 +16,10 @@ testingbot-tunnel*.pid
 
 # Built Storybook output, in the examples and anywhere else
 storybook-static/
+
+# Credentials. The addon writes TB_KEY and TB_SECRET here when the panel is
+# given consent to persist them, and the README tells people to create it by
+# hand, so it must never be committable.
+.env
+.env.*
+!.env.example

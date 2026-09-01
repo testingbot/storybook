@@ -528,6 +528,52 @@ deliberately, not on every build.
 
 `testingbot-storybook --help` lists the rest.
 
+### Splitting a run across machines
+
+A few hundred stories on one machine takes as long as it takes. `--shard-count`
+and `--shard-index` spread them over several:
+
+```yaml
+jobs:
+  visual:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - run: npx testingbot-storybook --shard-count 4 --shard-index ${{ matrix.shard }}
+        env:
+          TB_KEY: ${{ secrets.TB_KEY }}
+          TB_SECRET: ${{ secrets.TB_SECRET }}
+```
+
+`--shard-index` counts from 0, as Percy's does. `--shard-size` says how many
+stories per machine instead of how many machines, and the count is derived from
+it; passing both is an error, because they both answer the same question.
+
+Each shard sorts the stories by id and takes its own contiguous block, so the
+machines need to agree on nothing but the commit they built. Blocks differ in
+size by at most one story. An index past the last shard is an error rather than
+an empty run: it means the matrix and the flags disagree, and the stories that
+index would have covered would otherwise be captured by nobody while every job
+stayed green. More shards than stories is allowed, and the shards that draw
+nothing say so and exit 0 without opening a grid session.
+
+Two things to know before using it.
+
+A shard exits 0 when **its own** stories matched. It cannot say anything about
+the stories the other shards ran, so it is the job that collects the matrix, not
+this command, that decides whether the project passed. The JSON result carries
+`"partial": true` and a `shard` object for exactly this reason. `--partial` sets
+the same flag without sharding, for a run you already know is a subset.
+
+Every shard opens its own grid sessions, so four shards want four times the
+account concurrency at once. If your account limit is the bottleneck rather than
+wall clock, sharding will not help and may queue.
+
+Give each shard its own checkout. They read the same committed baselines, which
+is fine, but `--update-baselines` and `.testingbot/last-run.json` are per
+machine, so a shared working directory would have them overwrite each other.
+
 ## Storybook's Testing widget
 
 Results are published to Storybook's own status store, so you get sidebar icons
@@ -553,6 +599,7 @@ panel keeps working unchanged.
 | Per-story `parameters.testingbot`: skip, waitForSelector, args, globals, queryParams | Working |
 | Several viewport widths in one run, desktop only | Working |
 | MDX docs and generated autodocs pages, opt in | Working |
+| Splitting a run across CI machines with --shard-count and --shard-index | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
 | Real Android over Playwright, real iOS over WebDriver | Working |
 | Simulators and emulators, kept apart from physical hardware | Working |

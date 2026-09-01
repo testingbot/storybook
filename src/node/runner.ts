@@ -15,6 +15,7 @@ import {
 } from './hosted-visual.js'
 import { compareImages } from './image-diff.js'
 import { writeLastRun } from './run-store.js'
+import { applyShard, resolveShard } from './shard.js'
 import { fetchStoryIndex, selectStories } from './story-index.js'
 import {
   EXTRACT_ASYNC_SCRIPT,
@@ -24,6 +25,7 @@ import {
   storyUrl,
   toParameterMap,
 } from './story-parameters.js'
+import type { ShardRequest, ShardSpec } from './shard.js'
 import type { ParameterMap, StoryParameters } from './story-parameters.js'
 import { getSessionId, setSessionName, setSessionStatus, visualSnapshot } from './session.js'
 import {
@@ -125,6 +127,16 @@ export type RunnerArgs = {
   deviceUrl?: string | null
   scope?: RunScope
   storyId?: string | null
+  /**
+   * Take only this slice of the stories, so a large Storybook can be split
+   * across CI machines. Null runs everything. See shard.ts. TB-356.
+   */
+  shard?: ShardRequest | null
+  /**
+   * Say up front that this run is not the whole project, even when it is not
+   * sharded. A sharded run is partial whether this is set or not.
+   */
+  partial?: boolean
   signal: AbortSignal
   onProgress?: (event: RunProgressEvent) => void
   projectRoot?: string
@@ -139,6 +151,8 @@ export async function runOnGrid ({
   deviceUrl = null,
   scope = 'all',
   storyId = null,
+  shard: shardRequest = null,
+  partial = false,
   signal,
   onProgress = () => {},
   projectRoot = process.cwd(),
@@ -184,7 +198,7 @@ export async function runOnGrid ({
 
   const allStories = await fetchStoryIndex(devServerUrl, { signal })
   const scoped = applyScope(allStories, scope, storyId)
-  const stories = selectStories(scoped, {
+  const selected = selectStories(scoped, {
     // selectStories already narrowed to a single story if it needed to; passing
     // storyId again here would undo the component scope.
     storyId: null,
@@ -194,13 +208,30 @@ export async function runOnGrid ({
     captureAutodocs: config.captureAutodocs === true,
   })
 
-  if (stories.length === 0) {
+  if (selected.length === 0) {
     throw new RunError(
       describeEmptySelection(allStories, scope, storyId),
       'NO_STORIES',
     )
   }
 
+  // The shard is taken after everything else has had its say, so that
+  // "one quarter of the run" means one quarter of what this project actually
+  // captures rather than one quarter of the raw index. An out of range index
+  // throws here: it means the CI matrix and the flags disagree, and the
+  // stories nobody claimed would otherwise go uncaptured in silence.
+  let shard: ShardSpec | null = null
+
+  try {
+    shard = shardRequest ? resolveShard(shardRequest, selected.length) : null
+  } catch (error) {
+    throw new RunError((error as Error).message, 'BAD_SHARD')
+  }
+
+  const stories = shard ? applyShard(selected, shard) : selected
+
+  // Reported before anything is booted, because it is the number the developer
+  // is about to watch tick up and it is not the project's story count.
   onProgress({ phase: 'stories', total: stories.length })
 
   for (const entry of skipped) {
@@ -233,75 +264,83 @@ export async function runOnGrid ({
     )
   }
 
-  try {
-    onProgress({ phase: 'tunnel', message: 'Starting the TestingBot tunnel' })
+  // A shard can be empty, when the CI matrix has more machines in it than the
+  // project has stories. That is a matrix that is wider than it needs to be,
+  // not a failure, and it is not worth a tunnel or a grid session either: the
+  // run below is skipped whole and the result says it covered nothing.
+  if (stories.length === 0) {
+    notify('This shard has no stories in it. There are more shards than there are stories to spread over them.')
+  } else {
+    try {
+      onProgress({ phase: 'tunnel', message: 'Starting the TestingBot tunnel' })
 
-    // The device URL usually shares the dev server's port, but a configured
-    // one need not, and a tunnel is asked for its ports exactly once.
-    const tunnelInfo = await tunnel.ensureStarted(devServerUrl, {
-      alsoProxy: deviceUrl ? [deviceUrl] : [],
-    })
+      // The device URL usually shares the dev server's port, but a configured
+      // one need not, and a tunnel is asked for its ports exactly once.
+      const tunnelInfo = await tunnel.ensureStarted(devServerUrl, {
+        alsoProxy: deviceUrl ? [deviceUrl] : [],
+      })
 
-    throwIfAborted(signal)
+      throwIfAborted(signal)
 
-    const limits = await getAccountLimits(credentials)
-    const concurrency = resolveConcurrency(limits, targets.length)
-    const build = `storybook-${new Date().toISOString().replace(/[:.]/g, '-')}`
+      const limits = await getAccountLimits(credentials)
+      const concurrency = resolveConcurrency(limits, targets.length)
+      const build = `storybook-${new Date().toISOString().replace(/[:.]/g, '-')}`
 
-    await pool(targets, concurrency, async (target) => {
-      const args = {
-        target,
-        stories,
-        credentials,
-        tunnel: tunnelInfo.capability,
-        build,
-        config,
-        // Devices open the device URL; everything else opens the local one.
-        // Passing the local URL to a device is the exact failure TB-260 is
-        // about, so the choice is made here rather than inside the drivers.
-        devServerUrl: target.kind === 'device' ? (deviceUrl as string) : devServerUrl,
-        projectRoot,
-        signal,
-        onProgress,
-        notify,
-      }
+      await pool(targets, concurrency, async (target) => {
+        const args = {
+          target,
+          stories,
+          credentials,
+          tunnel: tunnelInfo.capability,
+          build,
+          config,
+          // Devices open the device URL; everything else opens the local one.
+          // Passing the local URL to a device is the exact failure TB-260 is
+          // about, so the choice is made here rather than inside the drivers.
+          devServerUrl: target.kind === 'device' ? (deviceUrl as string) : devServerUrl,
+          projectRoot,
+          signal,
+          onProgress,
+          notify,
+        }
 
-      /**
-       * One target that cannot start is not a reason to throw away the ones
-       * that did. A device that is out of stock, or a browser the grid refuses,
-       * used to abort the pool and discard every result already collected: a
-       * five-target run lost four working targets to the fifth. It is recorded
-       * as skipped instead, which already makes the run report red.
-       */
-      let outcome: TargetRunOutcome
+        /**
+         * One target that cannot start is not a reason to throw away the ones
+         * that did. A device that is out of stock, or a browser the grid refuses,
+         * used to abort the pool and discard every result already collected: a
+         * five-target run lost four working targets to the fifth. It is recorded
+         * as skipped instead, which already makes the run report red.
+         */
+        let outcome: TargetRunOutcome
 
-      try {
-        outcome = target.kind === 'device' && deviceDriverFor(target.spec) === 'webdriver'
-          ? await runDeviceTarget(args)
-          : await runTarget(args)
-      } catch (error) {
-        if (signal.aborted) throw error
+        try {
+          outcome = target.kind === 'device' && deviceDriverFor(target.spec) === 'webdriver'
+            ? await runDeviceTarget(args)
+            : await runTarget(args)
+        } catch (error) {
+          if (signal.aborted) throw error
 
-        const reason = (error as Error).message
-        skipped.push({ key: target.key, label: target.label, reason })
-        onProgress({ phase: 'target-skipped', target: target.key, label: target.label, reason })
+          const reason = (error as Error).message
+          skipped.push({ key: target.key, label: target.label, reason })
+          onProgress({ phase: 'target-skipped', target: target.key, label: target.label, reason })
 
-        return
-      }
+          return
+        }
 
-      results.push(...outcome.results)
+        results.push(...outcome.results)
 
-      // One entry per variant, all pointing at the one session that produced
-      // them. The panel lists what was captured, and a width is a thing that
-      // was captured even though it was not a thing that was booted.
-      for (const variant of outcome.reported) {
-        sessions.push({ key: variant.key, label: variant.label, sessionId: outcome.sessionId })
-      }
-    })
-  } finally {
-    // Always, including on cancellation. A tunnel left running holds one of the
-    // account's slots and the next run fails with CONCURRENCY_EXHAUSTED.
-    await tunnel.stop().catch(() => {})
+        // One entry per variant, all pointing at the one session that produced
+        // them. The panel lists what was captured, and a width is a thing that
+        // was captured even though it was not a thing that was booted.
+        for (const variant of outcome.reported) {
+          sessions.push({ key: variant.key, label: variant.label, sessionId: outcome.sessionId })
+        }
+      })
+    } finally {
+      // Always, including on cancellation. A tunnel left running holds one of the
+      // account's slots and the next run fails with CONCURRENCY_EXHAUSTED.
+      await tunnel.stop().catch(() => {})
+    }
   }
 
   const totals: Record<StoryOutcome, number> = { new: 0, passed: 0, diff: 0, failed: 0 }
@@ -321,6 +360,14 @@ export async function runOnGrid ({
     stories: results,
     targets: sessions,
     ...(skipped.length ? { skipped } : {}),
+    // A sharded run is partial whether or not anyone said so: it ran a quarter
+    // of the stories and knows nothing about the other three quarters. "ok"
+    // above still means "everything this run covered matched", because that is
+    // what the exit code has to be or every shard job would fail by design.
+    ...(partial || shard ? { partial: true } : {}),
+    ...(shard
+      ? { shard: { index: shard.index, count: shard.count, selected: stories.length, total: selected.length } }
+      : {}),
     baselineDir: baselineDir(projectRoot),
   }
 

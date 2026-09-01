@@ -10,9 +10,11 @@ import { resolveCredentials } from './node/credentials.js'
 import { resolveDeviceUrl } from './node/device-url.js'
 import { ExternalTunnel } from './node/external-tunnel.js'
 import { RunError, runOnGrid } from './node/runner.js'
+import { ShardError, validateShardRequest } from './node/shard.js'
 import { serveStatic } from './node/serve.js'
 import { TunnelManager } from './node/tunnel-manager.js'
 import { toTunnelError } from './node/tunnel-errors.js'
+import type { ShardRequest } from './node/shard.js'
 import type { ProjectConfig, RunProgressEvent, RunResult, TunnelProvider } from './node/types.js'
 
 /**
@@ -59,6 +61,13 @@ What to run
   --capture-autodocs     Also capture the docs pages generated from
                          tags: ['autodocs'].
 
+Splitting a run across CI machines
+  --shard-count <n>      How many machines the stories are spread over.
+  --shard-size <n>       How many stories per machine, instead of --shard-count.
+  --shard-index <n>      Which shard this machine is, counting from 0.
+  --partial              Say this run is not the whole project, without
+                         sharding. Implied by the shard options.
+
 Output
   --json                 Write the full result as JSON to stdout.
   --json-file <file>     Write the full result as JSON to a file.
@@ -72,6 +81,10 @@ Other
   --tunnel-id <id>       Reuse a tunnel that is already running, rather than
                          starting one. Also read from TB_TUNNEL_ID.
   --help, --version
+
+A sharded run exits 0 when its own stories matched. It says nothing about the
+stories the other shards ran, so it is the CI job that collects them, not this
+command, that decides whether the project as a whole passed.
 
 Credentials come from TB_KEY and TB_SECRET, .env, or ~/.testingbot.
 Browsers, devices and tolerance come from .testingbot.json.
@@ -96,6 +109,8 @@ type Options = {
   deviceUrl: string | null
   captureDocs: boolean
   captureAutodocs: boolean
+  shard: ShardRequest | null
+  partial: boolean
   json: boolean
   jsonFile: string | null
   quiet: boolean
@@ -104,6 +119,22 @@ type Options = {
 }
 
 class UsageError extends Error {}
+
+/**
+ * A flag that is a whole number or absent. Not Number(): Number('') is 0 and
+ * Number('two') is NaN, and both would go on to mean shard 0.
+ */
+function optionalCount (raw: string | undefined, flag: string): number | null {
+  if (raw === undefined) return null
+
+  const value = Number(raw)
+
+  if (!/^\d+$/.test(raw.trim()) || !Number.isInteger(value)) {
+    throw new UsageError(`${flag} must be a whole number, not ${JSON.stringify(raw)}.`)
+  }
+
+  return value
+}
 
 export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
   let parsed: ReturnType<typeof parseArgs>
@@ -122,6 +153,10 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
         'device-url': { type: 'string' },
         'capture-docs': { type: 'boolean', default: false },
         'capture-autodocs': { type: 'boolean', default: false },
+        'shard-count': { type: 'string' },
+        'shard-size': { type: 'string' },
+        'shard-index': { type: 'string' },
+        partial: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         'json-file': { type: 'string' },
         quiet: { type: 'boolean', default: false },
@@ -159,6 +194,28 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
     throw new UsageError(`--port must be a port number, not ${String(values.port)}.`)
   }
 
+  // Checked here, before a Storybook build takes two minutes to find out that
+  // the flags contradict each other. What cannot be checked yet is the index
+  // against the story count, and the runner does that.
+  const shardCount = optionalCount(values['shard-count'] as string | undefined, '--shard-count')
+  const shardSize = optionalCount(values['shard-size'] as string | undefined, '--shard-size')
+  const shardIndex = optionalCount(values['shard-index'] as string | undefined, '--shard-index')
+  let shard: ShardRequest | null = null
+
+  if (shardCount !== null || shardSize !== null || shardIndex !== null) {
+    if (shardIndex === null) {
+      throw new UsageError('--shard-index says which shard this machine is. Without it, nothing knows what to run.')
+    }
+
+    shard = { index: shardIndex, count: shardCount, size: shardSize }
+
+    try {
+      validateShardRequest(shard)
+    } catch (error) {
+      throw new UsageError(error instanceof ShardError ? error.message : String(error))
+    }
+  }
+
   return {
     url,
     staticDir,
@@ -169,6 +226,8 @@ export function parseCliArgs (argv: string[]): Options | 'help' | 'version' {
     deviceUrl: (values['device-url'] as string | undefined) ?? null,
     captureDocs: values['capture-docs'] as boolean,
     captureAutodocs: values['capture-autodocs'] as boolean,
+    shard,
+    partial: values.partial as boolean,
     json: values.json as boolean,
     jsonFile: (values['json-file'] as string | undefined) ?? null,
     quiet: values.quiet as boolean,
@@ -247,9 +306,28 @@ function printSummary (result: RunResult, projectRoot: string, write: (line: str
     write(`  ${totals.new} new baseline${totals.new === 1 ? '' : 's'} written. Commit .testingbot/baselines to make them count.`)
   }
 
+  if (result.shard) {
+    const { index, count, selected, total } = result.shard
+
+    write(`  Shard ${index} of ${count}, counting from 0: ${selected} of the project's ${total} stories.`)
+  }
+
+  // "Everything matched" is a claim, and a run that captured nothing has not
+  // earned it. This happens to a shard with more shards than stories.
+  const verdict = result.stories.length === 0
+    ? '  Nothing was captured, so there is nothing to say about this run.'
+    : '  Everything matched.'
+
   write(result.ok
-    ? '  Everything matched.'
+    ? verdict
     : '  This run did not match. Review the diffs, then either fix the change or re-run with --update-baselines.')
+
+  if (result.partial && result.ok && result.stories.length > 0) {
+    // Said in the shard's own log because that is where someone reads it, and
+    // because "Everything matched" on its own invites the wrong conclusion.
+    write('  This run was only part of the project. The other parts have to agree before the project has passed.')
+  }
+
   write('')
 }
 
@@ -369,13 +447,19 @@ async function main (argv: string[]): Promise<number> {
       config: effective,
       devServerUrl,
       deviceUrl,
+      shard: options.shard,
+      partial: options.partial,
       signal: controller.signal,
       projectRoot,
       tunnelManager: tunnel,
       onProgress: (event: RunProgressEvent) => {
         if (options.quiet) return
 
-        if (event.phase === 'stories') log(`${event.total} stor${event.total === 1 ? 'y' : 'ies'} to run.`)
+        if (event.phase === 'stories') {
+          const where = options.shard ? ` in shard ${options.shard.index}` : ''
+
+          log(`${event.total} stor${event.total === 1 ? 'y' : 'ies'} to run${where}.`)
+        }
         if (event.phase === 'tunnel') log(event.message)
         if (event.phase === 'notice') log(`  ${event.message}`)
         if (event.phase === 'target-started') log(`${event.label}: starting...`)

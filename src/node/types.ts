@@ -165,6 +165,24 @@ export type RunResult = {
    * than asked would show green for browsers nobody tested.
    */
   skipped?: { key: string; label: string; reason: string }[]
+  /**
+   * This run deliberately covered less than the whole project, because it was
+   * sharded or because --partial was passed. `ok` still means "everything this
+   * run covered matched", which is what the exit code has to be or every shard
+   * job in a CI matrix would fail by design. This is the flag that stops a
+   * green shard being read as a green project. TB-356.
+   */
+  partial?: boolean
+  /** Which slice of the stories this run took, when it was sharded. */
+  shard?: {
+    /** Counting from zero, as Percy's --shard-index does. */
+    index: number
+    count: number
+    /** Stories in this shard. */
+    selected: number
+    /** Stories the whole project would have run, before the split. */
+    total: number
+  }
   baselineDir: string
 }
 

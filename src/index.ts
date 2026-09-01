@@ -31,6 +31,8 @@ export {
 } from './node/targets.js'
 export type { TargetVariant } from './node/targets.js'
 export { fetchStoryIndex, isAutodocs, selectStories, StoryIndexError } from './node/story-index.js'
+export { applyShard, resolveShard, validateShardRequest, ShardError } from './node/shard.js'
+export type { ShardRequest, ShardSpec } from './node/shard.js'
 export { compareImages } from './node/image-diff.js'
 export {
   buildSnapshotArguments,

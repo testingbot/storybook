@@ -184,7 +184,7 @@ export function decideAffected ({
   return {
     run: 'some',
     reason: `${interesting.length} changed file${interesting.length === 1 ? '' : 's'} ` +
-      `reach ${storyIds.length} stor${storyIds.length === 1 ? 'y' : 'ies'}.`,
+      `reach${interesting.length === 1 ? 'es' : ''} ${storyIds.length} stor${storyIds.length === 1 ? 'y' : 'ies'}.`,
     storyIds,
   }
 }

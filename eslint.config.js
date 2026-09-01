@@ -3,7 +3,7 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', 'spike/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'spike/**', '**/storybook-static/**'] },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,

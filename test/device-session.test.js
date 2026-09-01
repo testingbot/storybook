@@ -1,0 +1,190 @@
+import { test, afterEach } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PNG } from 'pngjs'
+
+import { runOnGrid, toDeviceSpec } from '../dist/index.js'
+
+/**
+ * The real iOS path, driven against a fake WebDriver hub.
+ *
+ * Everything the runner does on a device goes over HTTP to the grid, so the
+ * whole path is reachable offline by answering those requests: the animation
+ * freeze, the settle poll, the render-error probe, the element screenshot, and
+ * what happens to the rest of the run when one device never starts.
+ *
+ * The one thing a fake cannot tell you is whether a real phone agrees. That is
+ * what the kitchen-sink example is for.
+ */
+
+const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf'
+
+const STORIES = {
+  'button--primary': { id: 'button--primary', title: 'Button', name: 'Primary', type: 'story' },
+}
+
+function png (colour) {
+  const image = new PNG({ width: 8, height: 8 })
+
+  image.data.fill(colour)
+
+  return PNG.sync.write(image)
+}
+
+/**
+ * A hub that answers for one device and refuses the other.
+ *
+ * `refuse` is matched against `deviceName`, so a test can decide which target
+ * fails without reaching into the runner. Every script the runner sends is
+ * recorded, because what it asks the device to do is the behaviour under test.
+ */
+function fakeHub ({ refuse = null, renderError = false } = {}) {
+  const original = globalThis.fetch
+  const scripts = []
+  const sessions = new Set()
+  let next = 0
+
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url)
+    const json = (value, status = 200) =>
+      new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
+
+    if (target.includes('/index.json')) return json({ v: 5, entries: STORIES })
+
+    // The account API is allowed to be unreachable: getAccountLimits falls back
+    // to one session at a time rather than failing the run.
+    if (!target.includes('/wd/hub')) throw new Error(`unexpected fetch to ${target}`)
+
+    const path = target.split('/wd/hub')[1]
+    const body = init.body ? JSON.parse(init.body) : {}
+
+    if (path === '/session') {
+      const deviceName = body.capabilities?.alwaysMatch?.['appium:deviceName']
+
+      if (deviceName === refuse) {
+        return json({ value: { error: 'session not created', message: 'No devices are available.' } }, 500)
+      }
+
+      next += 1
+      const sessionId = `session-${next}`
+      sessions.add(sessionId)
+
+      return json({ value: { sessionId } })
+    }
+
+    if (init.method === 'DELETE') return json({ value: null })
+
+    if (path.endsWith('/url')) return json({ value: null })
+
+    if (path.endsWith('/execute/sync')) {
+      scripts.push(body.script)
+
+      if (body.script.includes('sb-show-errordisplay')) {
+        return json({ value: renderError ? 'The story failed to render: boom' : null })
+      }
+
+      // The freeze, the annotations and the settle poll all just need to say
+      // they worked. The settle poll is the one that must answer true, or the
+      // runner waits out its timeout.
+      return json({ value: true })
+    }
+
+    if (path.endsWith('/element')) return json({ value: { [ELEMENT_KEY]: 'story-root' } })
+
+    if (path.endsWith('/screenshot')) return json({ value: png(255).toString('base64') })
+
+    throw new Error(`unexpected ${init.method ?? 'GET'} ${path}`)
+  }
+
+  return { scripts, sessions, restore: () => { globalThis.fetch = original } }
+}
+
+let hub = null
+let projectRoot = null
+
+afterEach(() => {
+  hub?.restore()
+  hub = null
+
+  if (projectRoot) rmSync(projectRoot, { recursive: true, force: true })
+  projectRoot = null
+})
+
+function run (config, extra = {}) {
+  projectRoot = mkdtempSync(join(tmpdir(), 'tb-device-'))
+
+  return runOnGrid({
+    credentials: { key: 'k', secret: 's', source: 'test' },
+    config: { browsers: [], maxDiffPixelRatio: 0.001, ...config },
+    devServerUrl: 'http://localhost:6006',
+    deviceUrl: 'http://192.168.1.10:6006',
+    signal: new AbortController().signal,
+    projectRoot,
+    tunnelManager: {
+      async ensureStarted () { return { capability: { tunnelIdentifier: 'ours', localHttpPorts: [6006] } } },
+      async stop () {},
+    },
+    ...extra,
+  })
+}
+
+test('a device is told to freeze its animations before anything is measured', async () => {
+  hub = fakeHub()
+
+  const result = await run({ devices: [toDeviceSpec('iPhone 15', 'iOS', '18.0')] })
+
+  const freeze = hub.scripts.findIndex((script) => script.includes('animation-duration: 1ms'))
+  const shot = hub.scripts.findIndex((script) => script.includes('sb-show-errordisplay'))
+
+  assert.ok(freeze >= 0, 'the animation freeze was never sent')
+  // Order is the point. Freezing after the settle wait would let a spinner be
+  // caught mid-turn, which is the 1.7% diff this exists to stop.
+  assert.ok(freeze < shot, 'animations were frozen after the story had already settled')
+  assert.equal(result.totals.new, 1)
+})
+
+test('a story that throws is reported as such, not as a screenshot timeout', async () => {
+  hub = fakeHub({ renderError: true })
+
+  const result = await run({ devices: [toDeviceSpec('iPhone 15', 'iOS', '18.0')] })
+
+  assert.equal(result.totals.failed, 1)
+  assert.equal(result.totals.new, 0)
+  assert.match(result.stories[0].message, /The story failed to render: boom/)
+  // No screenshot was taken, so no baseline was written for a story that never
+  // rendered. A baseline of Storybook's error screen would then pass forever.
+  assert.ok(!hub.scripts.some((script) => script.includes('screenshot')))
+})
+
+test('one device that never starts does not throw away the device that did', async () => {
+  hub = fakeHub({ refuse: 'iPhone 14' })
+
+  const result = await run({
+    devices: [
+      toDeviceSpec('iPhone 14', 'iOS', '17.0'),
+      toDeviceSpec('iPhone 15', 'iOS', '18.0'),
+    ],
+  })
+
+  assert.equal(result.skipped.length, 1)
+  assert.match(result.skipped[0].label, /iPhone 14/)
+  assert.match(result.skipped[0].reason, /No devices are available/)
+
+  // The working device still ran and still wrote its baseline.
+  assert.equal(result.stories.length, 1)
+  assert.equal(result.stories[0].target, 'iphone-15_ios_18.0')
+  assert.equal(result.totals.new, 1)
+
+  // And the run is still red, because it covered fewer targets than asked.
+  assert.equal(result.ok, false)
+})
+
+test('the session is closed even when the device fails mid-run', async () => {
+  hub = fakeHub({ renderError: true })
+
+  await run({ devices: [toDeviceSpec('iPhone 15', 'iOS', '18.0')] })
+
+  assert.equal(hub.sessions.size, 1)
+})

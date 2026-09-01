@@ -167,3 +167,49 @@ test('a request cannot escape the build directory', async () => {
     fs.rmSync(path.join(dir, '..', 'tb-secret.txt'), { force: true })
   }
 })
+
+/**
+ * A run that fails inside the run must not be reported as a tunnel failure.
+ * toTunnelError has a fallback that names the tunnel for anything it does not
+ * recognise, so routing a RunError through it turned "no stories matched" into
+ * "TestingBot Tunnel could not be started" and sent people to fix Java.
+ */
+test('a failure inside the run keeps its own message instead of blaming the tunnel', async () => {
+  const { main } = await import('../dist/cli.js')
+
+  const cwd = process.cwd()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-cli-'))
+  const written = []
+  const stderr = process.stderr.write
+  const { TB_KEY, TB_SECRET } = process.env
+  const fetchOriginal = globalThis.fetch
+
+  process.chdir(dir)
+  process.env.TB_KEY = 'k'
+  process.env.TB_SECRET = 's'
+  process.stderr.write = (line) => { written.push(String(line)); return true }
+  globalThis.fetch = async () => new Response(JSON.stringify({ v: 5, entries: {} }), {
+    headers: { 'content-type': 'application/json' },
+  })
+
+  let code
+  try {
+    // --tunnel-id keeps a real tunnel out of it: an external tunnel is adopted,
+    // never started, and never stopped.
+    code = await main(['--url', 'http://localhost:6006', '--tunnel-id', 'someone-elses'])
+  } finally {
+    globalThis.fetch = fetchOriginal
+    process.stderr.write = stderr
+    process.chdir(cwd)
+    if (TB_KEY === undefined) delete process.env.TB_KEY; else process.env.TB_KEY = TB_KEY
+    if (TB_SECRET === undefined) delete process.env.TB_SECRET; else process.env.TB_SECRET = TB_SECRET
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+
+  const output = written.join('')
+
+  // EXIT_SETUP: this is something to fix before running again, not a red run.
+  assert.equal(code, 2)
+  assert.match(output, /stor/i)
+  assert.doesNotMatch(output, /Tunnel could not be started/)
+})

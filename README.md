@@ -198,7 +198,9 @@ You can instead hand the whole job to TestingBot:
 
 ```json
 {
-  "devices": [{ "deviceName": "iPhone 15", "platformName": "iOS" }],
+  "devices": [
+    { "deviceName": "iPhone 15", "platformName": "iOS", "platformVersion": "18.0" }
+  ],
   "visual": "hosted"
 }
 ```
@@ -281,7 +283,48 @@ and is reviewable like any other change.
 ## Real devices
 
 Real iPhones and Android devices are in the same picker as the browsers, and
-they screenshot through WebDriver rather than Playwright.
+they take two different code paths. Playwright can drive Chrome on a real
+Android device, so Android targets connect the same way a desktop browser does
+and inherit all of its behaviour. Playwright has no iOS backend at all, so a
+physical iPhone is driven over WebDriver and Mobile Safari instead. Everything
+after the screenshot is the same on both paths.
+
+### Simulators, emulators and physical hardware
+
+The picker lists all three, and the ones that are not physical hardware say so
+in their label. They start faster and cost less, which makes them useful while
+iterating, but they render on a desktop GPU and will not catch what a phone
+catches.
+
+A device entry carries `realDevice`, which defaults to `true`:
+
+```json
+{
+  "devices": [
+    { "deviceName": "iPhone 15", "platformName": "iOS", "platformVersion": "18.0" },
+    {
+      "deviceName": "iPhone 15",
+      "platformName": "iOS",
+      "platformVersion": "18.0",
+      "realDevice": false
+    }
+  ]
+}
+```
+
+Those are two targets, not one written twice. They render differently, so they
+get separate baselines: the physical one is keyed `iphone-15_ios_18.0` and the
+simulator `iphone-15_ios_18.0_simulator`. Baselines written before simulators
+were selectable keep their keys.
+
+This distinction is not cosmetic. TestingBot exposes two inventories, and they
+do not describe the same fleet. `https://api.testingbot.com/v1/browsers` lists
+iOS simulators and Android emulators, plus physical Android marked
+`REAL_ANDROID`; an iOS entry there reports the macOS version hosting it rather
+than an iOS version. Physical iOS appears only in
+`https://api.testingbot.com/v1/devices`, which is the fleet inventory and says
+whether each device is free right now. The addon reads both, and only offers
+hardware that is actually available.
 
 There is one constraint the panel handles for you and that is worth
 understanding, because it is the reason a device target can appear disabled: a
@@ -364,7 +407,8 @@ panel keeps working unchanged.
 | Browser and device picker from your account's live capability list | Working |
 | Run by story, component or everything, with live progress and cancel | Working |
 | Screenshots, pixel diffs, baselines, side by side review, approval | Working |
-| Real devices over WebDriver | Working |
+| Real Android over Playwright, real iOS over WebDriver | Working |
+| Simulators and emulators, kept apart from physical hardware | Working |
 | Hosted visual comparison on TestingBot, browsers and devices | Working |
 | CLI with CI exit codes and JSON output | Working |
 | Storybook Testing widget and sidebar statuses | Working |
@@ -375,15 +419,16 @@ Playwright. A session starts on the grid and is billed, but the handshake never
 completes and the connect call times out. The same Firefox on the same account
 drives fine over WebDriver, so this is a grid endpoint problem rather than an
 addon one, and it is being tracked separately. Until it is fixed, use
-chromium-family browsers on desktop: `chrome` and `edge`. Real devices are
-unaffected, because they do not go through Playwright.
+chromium-family browsers on desktop: `chrome` and `edge`. Devices are
+unaffected: real Android is Chrome, and real iOS does not go through Playwright
+at all.
 
 Two limits that are not bugs and will not be fixed here:
 
 - Playwright does not drive real iOS devices. Its real-device support is Chrome
-  on real Android. This addon reaches real iOS through WebDriver and Mobile
-  Safari instead, which is why devices and desktop browsers take different code
-  paths.
+  on real Android, which this addon uses. Real iOS is reached through WebDriver
+  and Mobile Safari instead, which is why the two device families take
+  different code paths.
 - Storybook's Vitest addon cannot run against a remote grid. Its orchestrator
   serves the tests from localhost, which is the one address the grid cannot
   reach. That is the reason this addon exists as a separate runner rather than

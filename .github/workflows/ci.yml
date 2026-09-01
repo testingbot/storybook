@@ -9,12 +9,19 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the range package.json claims to support, so "engines"
+        # is something CI checks rather than something we hope is true.
+        node-version: [20, 24]
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - run: npm ci
@@ -23,6 +30,19 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+      # npm runs scripts with sh, where "**" is just "*", so the test script
+      # globs one flat directory. A test file in a subdirectory would not run
+      # and nothing would say so, which is the same silent pass this addon
+      # exists to avoid.
+      - name: No test file hides in a subdirectory
+        run: |
+          nested=$(find test -mindepth 2 -name '*.test.js')
+          if [ -n "$nested" ]; then
+            echo "These test files are not run by \"npm test\":"
+            echo "$nested"
+            exit 1
+          fi
 
       # The surface tests assert that the experimental Storybook APIs this addon
       # depends on still exist. Run them against the newest Storybook 10 as well

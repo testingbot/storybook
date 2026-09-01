@@ -60,7 +60,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node --test test/**/*.test.js",
+    "test": "node --test test/*.test.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

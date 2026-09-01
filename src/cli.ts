@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
+import { pathToFileURL } from 'node:url'
 
 import { approvableStories, approveStory } from './node/run-store.js'
 import { resolveCredentials } from './node/credentials.js'
@@ -589,10 +590,29 @@ async function main (argv: string[]): Promise<number> {
   return result.ok ? EXIT_OK : EXIT_DIFF
 }
 
-const isEntryPoint = process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+/**
+ * Whether this file was run as a command rather than imported.
+ *
+ * Both sides have to be resolved before they can be compared. npm installs a
+ * bin as a symlink in node_modules/.bin, so argv[1] is that symlink while
+ * import.meta.url is the real path of dist/cli.js, and comparing the two
+ * unresolved makes every installed copy of this CLI exit 0 having done
+ * nothing at all. pathToFileURL rather than string concatenation because a
+ * path can contain a space or a "#", and "file://" + that is not a valid URL.
+ */
+function isEntryPoint (): boolean {
+  const invoked = process.argv[1]
 
-if (isEntryPoint) {
+  if (invoked === undefined) return false
+
+  try {
+    return import.meta.url === pathToFileURL(fs.realpathSync(invoked)).href
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint()) {
   main(process.argv.slice(2)).then(
     (code) => { process.exitCode = code },
     (error: Error) => {

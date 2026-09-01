@@ -213,3 +213,24 @@ test('a failure inside the run keeps its own message instead of blaming the tunn
   assert.match(output, /stor/i)
   assert.doesNotMatch(output, /Tunnel could not be started/)
 })
+
+test('the command still runs when it is reached through a symlink', async () => {
+  // npm installs a bin as a symlink in node_modules/.bin, so argv[1] is the
+  // symlink and import.meta.url is the real path of dist/cli.js. Comparing
+  // those unresolved makes the CLI exit 0 having printed nothing and done
+  // nothing, on every machine that installed it rather than ran it from a
+  // checkout, which is the worst possible place for a silent no-op.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-bin-'))
+  const link = path.join(scratch, 'testingbot-storybook')
+
+  try {
+    fs.symlinkSync(new URL('../dist/cli.js', import.meta.url).pathname, link)
+
+    const { execFileSync } = await import('node:child_process')
+    const stdout = execFileSync(process.execPath, [link, '--version'], { encoding: 'utf8' })
+
+    assert.match(stdout.trim(), /^\d+\.\d+\.\d+/)
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+  }
+})

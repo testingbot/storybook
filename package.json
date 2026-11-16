@@ -29,6 +29,7 @@
     "preset.cjs",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

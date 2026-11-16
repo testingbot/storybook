@@ -12,9 +12,10 @@ import type { ProjectConfig, StoryResult } from './types.js'
  * This exists for real devices. A device screenshot depends on the exact handset
  * the grid allocated, so a PNG committed to a repository is a fragile baseline
  * in a way a desktop Chrome one is not. The hosted service keys baselines per
- * test environment and, for iOS and Android, ignores the status and navigation
- * bar regions automatically (hub/lib/visual.js, generateCompareOptions), which
- * is a whole class of false positive the local path would have to solve again.
+ * test environment and ignores fixed bands of the screen automatically on
+ * mobile (hub/lib/visual.js, generateCompareOptions: the top 120 px on iOS and
+ * Android, the bottom 50 px on iOS), which is a whole class of false positive
+ * the local path would have to solve again.
  *
  * Both drivers, and the difference is only in how the command is addressed.
  * WebDriver sends it as an execute script, `tb:visual.snapshot={...}`, which
@@ -61,6 +62,9 @@ export function visualNameFor (storyId: string): string {
   return storyId
 }
 
+/** The hostedVisual keys that are forwarded; see buildSnapshotOptions. */
+export const HOSTED_VISUAL_OPTIONS = ['threshold', 'ignoreRegions', 'ignoreSelectors', 'disableFreeze'] as const
+
 export function buildSnapshotOptions (
   config: ProjectConfig,
   rootSelector: string,
@@ -69,11 +73,13 @@ export function buildSnapshotOptions (
     ? { fullPage: true }
     : { selector: rootSelector }
 
-  // Passed through untouched when set. hub's sanitizeOptions allowlists these,
-  // so anything else would be dropped server side anyway.
+  // Passed through untouched when set: the options the hosted comparison acts on.
+  // hub's sanitizeOptions also lets diffColor and antialiasing through, but the
+  // compare service behind it reads neither (anti-aliasing is always ignored),
+  // so sending them would claim a setting that does nothing.
   const passthrough = config.hostedVisual
   if (passthrough && typeof passthrough === 'object' && !Array.isArray(passthrough)) {
-    for (const key of ['threshold', 'ignoreRegions', 'ignoreSelectors', 'diffColor', 'antialiasing', 'disableFreeze']) {
+    for (const key of HOSTED_VISUAL_OPTIONS) {
       if (key in passthrough) options[key] = (passthrough as Record<string, unknown>)[key]
     }
   }

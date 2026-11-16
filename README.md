@@ -357,9 +357,10 @@ It applies to every target in the run, browsers and devices alike, but devices
 are what it is for. A device
 screenshot depends on the exact handset the grid allocated, which makes a PNG
 committed to a repository a fragile baseline in a way a desktop Chrome one is
-not. The hosted service keys baselines per test environment and ignores the iOS
-and Android status and navigation bars automatically, which is a class of false
-positive the local path would otherwise leave to you.
+not. The hosted service keys baselines per test environment and leaves the top
+of the screen out of the comparison on iOS and Android devices (and the bottom
+edge on iOS), where the status bar sits, which is a class of false positive the
+local path would otherwise leave to you.
 
 Two things to know before turning it on:
 
@@ -386,10 +387,12 @@ Options are passed to the service under `hostedVisual`:
 }
 ```
 
-`threshold`, `ignoreRegions`, `ignoreSelectors`, `diffColor`, `antialiasing` and
-`disableFreeze` are forwarded. Anything else is dropped, because the service
-would drop it anyway and a command should not claim to ask for something it does
-not.
+`threshold`, `ignoreRegions`, `ignoreSelectors` and `disableFreeze` are
+forwarded. Anything else is dropped, because the hosted comparison does not act
+on it and a command should not claim to ask for something it does not.
+Anti-aliased pixels are always ignored by the hosted comparison; there is no
+option for it. The addon sets `selector` (the story root) or `fullPage` itself,
+from the project's `fullPage` setting.
 
 ## Using the panel
 
@@ -715,7 +718,7 @@ Frameworks this has been booted against: `@storybook/react-vite` and
 
 ## Security
 
-Two deliberate defences, both of which protect your account rather than your
+Three deliberate defences, all of which protect your account rather than your
 machine:
 
 - **A per-process nonce.** The preset injects a nonce into the manager document

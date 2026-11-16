@@ -130,6 +130,9 @@ test('hostedVisual options are passed through, unknown ones are not', () => {
         ignoreSelectors: ['.clock'],
         disableFreeze: true,
         somethingHubDoesNotKnow: true,
+        // hub accepts these two, but the compare service ignores both.
+        diffColor: '#ff00ff',
+        antialiasing: false,
       },
     },
     '#storybook-root',
@@ -141,6 +144,8 @@ test('hostedVisual options are passed through, unknown ones are not', () => {
   // hub's sanitizeOptions would drop it anyway; not sending it keeps the
   // command honest about what it is asking for.
   assert.equal(options.somethingHubDoesNotKnow, undefined)
+  assert.equal(options.diffColor, undefined)
+  assert.equal(options.antialiasing, undefined)
 })
 
 test('the script is the shape hub dispatches on', () => {
